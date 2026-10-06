@@ -1,13 +1,75 @@
 <script setup lang="ts">
-import { invoke } from "@tauri-apps/api/core";
+import { onMounted, onBeforeUnmount } from "vue";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { hideMainWindow } from "./api";
 
-async function hideToTray() {
-  try {
-    await invoke("hide_main_window");
-  } catch (e) {
-    console.error("hide failed:", e);
+const win = getCurrentWindow();
+let unlistenMoved: (() => void) | null = null;
+let unlistenBlur: (() => void) | null = null;
+
+// 位置记忆：保存窗口位置到 localStorage
+function saveWindowPosition() {
+  win.innerPosition().then((pos) => {
+    localStorage.setItem("timesense_window_x", String(pos.x));
+    localStorage.setItem("timesense_window_y", String(pos.y));
+  }).catch(() => {});
+}
+
+// 位置记忆：从 localStorage 还原窗口位置
+async function restoreWindowPosition() {
+  const x = localStorage.getItem("timesense_window_x");
+  const y = localStorage.getItem("timesense_window_y");
+  if (x && y) {
+    try {
+      await win.setPosition({ x: Number(x), y: Number(y) });
+    } catch {
+      // 位置无效时忽略（比如屏幕分辨率变了）
+    }
   }
 }
+
+// Esc 键隐藏面板
+function handleKeydown(e: KeyboardEvent) {
+  if (e.key === "Escape") {
+    hideMainWindow();
+  }
+}
+
+onMounted(async () => {
+  // 恢复窗口位置
+  await restoreWindowPosition();
+
+  // 监听窗口移动，保存位置
+  try {
+    unlistenMoved = await win.onMoved(() => {
+      saveWindowPosition();
+    });
+  } catch {}
+
+  // 失去焦点自动隐藏
+  try {
+    unlistenBlur = await win.onBlur(() => {
+      // 延迟一点再隐藏，避免因为点击托盘导致瞬间失焦又隐藏
+      setTimeout(() => {
+        // 再次确认是否真的失焦了
+        win.isFocused().then((focused) => {
+          if (!focused) {
+            hideMainWindow();
+          }
+        }).catch(() => {});
+      }, 150);
+    });
+  } catch {}
+
+  // Esc 键监听
+  window.addEventListener("keydown", handleKeydown);
+});
+
+onBeforeUnmount(() => {
+  unlistenMoved?.();
+  unlistenBlur?.();
+  window.removeEventListener("keydown", handleKeydown);
+});
 </script>
 
 <template>
@@ -20,7 +82,7 @@ async function hideToTray() {
           <span class="app-title">TimeSense</span>
         </div>
         <div class="window-controls">
-          <button class="win-btn collapse" @click.stop="hideToTray" title="收起面板">
+          <button class="win-btn collapse" @click.stop="hideMainWindow" title="收起面板">
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
               <path
                 d="M3 5L7 9L11 5"

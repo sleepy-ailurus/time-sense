@@ -104,6 +104,73 @@ impl ActivityDao {
             idle_seconds,
         })
     }
+
+    /// 获取指定日期的所有活动记录（按开始时间正序）
+    pub fn get_activity_by_date(conn: &Connection, date: &str) -> Result<Vec<ActivityLog>> {
+        let (start_ts, end_ts) = date_timestamp_range(date)?;
+
+        let mut stmt = conn.prepare(
+            "SELECT id, process_name, window_title, start_time, end_time, duration, is_idle
+             FROM activity_logs
+             WHERE start_time >= ?1 AND start_time < ?2
+             ORDER BY start_time ASC",
+        )?;
+
+        let rows = stmt.query_map(params![start_ts, end_ts], |row| {
+            let is_idle_int: i32 = row.get(6)?;
+            Ok(ActivityLog {
+                id: Some(row.get(0)?),
+                process_name: row.get(1)?,
+                window_title: row.get(2)?,
+                start_time: row.get(3)?,
+                end_time: row.get(4)?,
+                duration: row.get(5)?,
+                is_idle: is_idle_int == 1,
+            })
+        })?;
+
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
+    }
+
+    /// 更新活动记录的结束时间和持续时长
+    pub fn update_end_time(conn: &Connection, id: i64, end_time: i64, duration: i64) -> Result<()> {
+        conn.execute(
+            "UPDATE activity_logs SET end_time = ?1, duration = ?2 WHERE id = ?3",
+            params![end_time, duration, id],
+        )?;
+        Ok(())
+    }
+
+    /// 修复未闭合的记录（end_time = 0 或 end_time = start_time）
+    /// 程序异常退出后重启时调用，将未闭合记录的 end_time 设为 start_time，duration 设为 0
+    pub fn fix_open_records(conn: &Connection) -> Result<usize> {
+        let mut stmt = conn.prepare(
+            "SELECT id, start_time FROM activity_logs WHERE end_time = 0 OR duration = 0",
+        )?;
+
+        let ids: Vec<i64> = stmt.query_map([], |row| row.get::<_, i64>(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let count = ids.len();
+
+        for id in &ids {
+            conn.execute(
+                "UPDATE activity_logs SET end_time = start_time, duration = 0 WHERE id = ?1",
+                params![id],
+            )?;
+        }
+
+        if count > 0 {
+            tracing::warn!("Fixed {} unclosed activity records", count);
+        }
+
+        Ok(count)
+    }
 }
 
 /// 获取今日 00:00 和明日 00:00 的 Unix 时间戳（秒）
@@ -115,4 +182,25 @@ fn today_timestamp_range() -> (i64, i64) {
         .timestamp();
     let tomorrow_start = today_start + 86400;
     (today_start, tomorrow_start)
+}
+
+/// 解析 YYYY-MM-DD 日期字符串，返回当天起止时间戳（秒）
+fn date_timestamp_range(date_str: &str) -> Result<(i64, i64)> {
+    let parts: Vec<&str> = date_str.split('-').collect();
+    if parts.len() != 3 {
+        anyhow::bail!("Invalid date format, expected YYYY-MM-DD: {}", date_str);
+    }
+
+    let year: i32 = parts[0].parse().map_err(|_| anyhow::anyhow!("Invalid year"))?;
+    let month: u32 = parts[1].parse().map_err(|_| anyhow::anyhow!("Invalid month"))?;
+    let day: u32 = parts[2].parse().map_err(|_| anyhow::anyhow!("Invalid day"))?;
+
+    let start = Local
+        .with_ymd_and_hms(year, month, day, 0, 0, 0)
+        .single()
+        .ok_or_else(|| anyhow::anyhow!("Invalid date: {}", date_str))?
+        .timestamp();
+
+    let end = start + 86400;
+    Ok((start, end))
 }

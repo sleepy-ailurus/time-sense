@@ -1,5 +1,6 @@
 pub mod models;
 pub mod activity_dao;
+pub mod migration;
 
 use std::path::PathBuf;
 use rusqlite::Connection;
@@ -33,38 +34,10 @@ impl Database {
         })
     }
 
-    /// 初始化数据库表
+    /// 初始化数据库（执行迁移）
     pub fn init(&self) -> Result<()> {
         let conn = self.conn.lock();
-
-        conn.execute(
-            r#"
-            CREATE TABLE IF NOT EXISTS activity_logs (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                process_name TEXT    NOT NULL,
-                window_title TEXT,
-                start_time  INTEGER NOT NULL,
-                end_time    INTEGER NOT NULL,
-                duration    INTEGER NOT NULL,
-                is_idle     INTEGER DEFAULT 0,
-                created_at  INTEGER DEFAULT (strftime('%s','now'))
-            )
-            "#,
-            [],
-        )?;
-
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_activity_logs_start_time 
-             ON activity_logs(start_time)",
-            [],
-        )?;
-
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_activity_logs_process 
-             ON activity_logs(process_name)",
-            [],
-        )?;
-
+        migration::run_migrations(&conn)?;
         Ok(())
     }
 

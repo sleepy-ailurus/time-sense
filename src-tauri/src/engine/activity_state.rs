@@ -11,22 +11,50 @@ struct CurrentState {
     window_title: String,
     start_time: i64,
     is_idle: bool,
+    /// 当前活动在数据库中的记录 ID（活动开始时立即插入）
+    log_id: Option<i64>,
 }
 
 /// 活动状态机 — 合并窗口变化和空闲检测，负责写入数据库
+/// 
+/// 写入策略：
+/// - 活动开始时立即插入一条记录（end_time = start_time, duration = 0），保存 log_id
+/// - 每次 tick 时更新当前记录的 end_time 和 duration（实际每几个 tick 更新一次以降低 IO）
+/// - 活动结束时（切换状态）更新最终的 end_time 和 duration
+/// - 程序启动时检查并修复未闭合的记录
 pub struct ActivityStateMachine {
     db: Arc<Database>,
     current: Option<CurrentState>,
     /// 短暂切换记录（用于防抖）：(目标进程, 目标标题, 开始时间, is_idle)
     pending_switch: Option<(String, String, i64, bool)>,
+    /// 距离上次刷新数据库的 tick 计数
+    flush_tick_count: u32,
 }
+
+/// 每 N 次 tick 更新一次当前活动的 end_time（降低数据库写入频率）
+const FLUSH_INTERVAL_TICKS: u32 = 6; // 6 * 5s = 30 秒
 
 impl ActivityStateMachine {
     pub fn new(db: Arc<Database>) -> Self {
+        // 启动时修复未闭合的记录
+        {
+            let conn = db.conn().lock();
+            match ActivityDao::fix_open_records(&conn) {
+                Ok(count) if count > 0 => {
+                    tracing::info!("Recovered from unclean shutdown: fixed {} records", count);
+                }
+                Err(e) => {
+                    tracing::error!("Failed to fix open records: {}", e);
+                }
+                _ => {}
+            }
+        }
+
         Self {
             db,
             current: None,
             pending_switch: None,
+            flush_tick_count: 0,
         }
     }
 
@@ -49,6 +77,12 @@ impl ActivityStateMachine {
         if same_as_current {
             // 状态没变，清除待切换
             self.pending_switch = None;
+            // 定期刷新当前活动的 end_time
+            self.flush_tick_count += 1;
+            if self.flush_tick_count >= FLUSH_INTERVAL_TICKS {
+                self.flush_current(now);
+                self.flush_tick_count = 0;
+            }
             return;
         }
 
@@ -84,30 +118,49 @@ impl ActivityStateMachine {
         // 防抖通过，正式切换状态
         self.switch_state(target_process, target_title, now, is_idle);
         self.pending_switch = None;
+        self.flush_tick_count = 0;
     }
 
-    /// 切换到新状态，并将旧状态写入数据库
+    /// 切换到新状态：关闭旧状态（更新数据库），开启新状态（立即插入数据库）
     fn switch_state(&mut self, process: String, title: String, now: i64, is_idle: bool) {
-        // 如果有旧状态，写入数据库
+        // 如果有旧状态，更新其 end_time
         if let Some(old) = &self.current {
             let duration = now - old.start_time;
             if duration > 0 {
-                let log = ActivityLog {
-                    id: None,
-                    process_name: old.process_name.clone(),
-                    window_title: if old.window_title.is_empty() { None } else { Some(old.window_title.clone()) },
-                    start_time: old.start_time,
-                    end_time: now,
-                    duration,
-                    is_idle: old.is_idle,
-                };
-
-                let conn = self.db.conn().lock();
-                if let Err(e) = ActivityDao::insert(&conn, &log) {
-                    tracing::error!("Failed to insert activity log: {}", e);
+                if let Some(log_id) = old.log_id {
+                    let conn = self.db.conn().lock();
+                    if let Err(e) = ActivityDao::update_end_time(&conn, log_id, now, duration) {
+                        tracing::error!("Failed to update activity end time: {}", e);
+                    }
                 }
+            } else if let Some(log_id) = old.log_id {
+                // duration 为 0，直接删掉这条空记录
+                let conn = self.db.conn().lock();
+                let _ = conn.execute("DELETE FROM activity_logs WHERE id = ?1", rusqlite::params![log_id]);
             }
         }
+
+        // 插入新活动记录（开始时即写入，duration=0 表示进行中）
+        let log = ActivityLog {
+            id: None,
+            process_name: process.clone(),
+            window_title: if title.is_empty() { None } else { Some(title.clone()) },
+            start_time: now,
+            end_time: now,
+            duration: 0,
+            is_idle,
+        };
+
+        let log_id = {
+            let conn = self.db.conn().lock();
+            match ActivityDao::insert(&conn, &log) {
+                Ok(id) => Some(id),
+                Err(e) => {
+                    tracing::error!("Failed to insert activity log: {}", e);
+                    None
+                }
+            }
+        };
 
         // 更新当前状态
         self.current = Some(CurrentState {
@@ -115,12 +168,33 @@ impl ActivityStateMachine {
             window_title: title,
             start_time: now,
             is_idle,
+            log_id,
         });
+    }
+
+    /// 刷新当前活动的 end_time（定期调用，防止崩溃丢失太多数据）
+    fn flush_current(&mut self, now: i64) {
+        if let Some(cur) = &self.current {
+            if let Some(log_id) = cur.log_id {
+                let duration = now - cur.start_time;
+                if duration > 0 {
+                    let conn = self.db.conn().lock();
+                    if let Err(e) = ActivityDao::update_end_time(&conn, log_id, now, duration) {
+                        tracing::error!("Failed to flush current activity: {}", e);
+                    }
+                }
+            }
+        }
+    }
+
+    /// 手动 flush（程序退出时调用）
+    pub fn flush(&mut self) {
+        let now = Utc::now().timestamp();
+        self.flush_current(now);
     }
 
     /// 获取当前正在进行的活动
     pub fn get_current(&self) -> Option<(String, String, i64, bool)> {
-        let now = Utc::now().timestamp();
         self.current.as_ref().map(|cur| {
             (
                 cur.process_name.clone(),
@@ -138,5 +212,3 @@ impl ActivityStateMachine {
         }
     }
 }
-
-// 程序退出时，把当前状态写入数据库（这里暂不实现 Drop，由 Tauri 退出时处理）

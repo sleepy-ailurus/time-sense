@@ -1,6 +1,6 @@
 use tauri::{State, Window};
 
-use crate::db::{ActivityDao, AppStat, CurrentActivity, TodayTotal};
+use crate::db::{ActivityDao, ActivityLog, AppStat, CurrentActivity, TodayTotal};
 use crate::AppState;
 
 /// 获取今日各应用耗时统计
@@ -56,4 +56,11 @@ pub fn toggle_recording(state: State<AppState>) -> bool {
 #[tauri::command]
 pub fn hide_main_window(window: Window) -> Result<(), String> {
     window.hide().map_err(|e| e.to_string())
+}
+
+/// 获取指定日期的所有活动记录
+#[tauri::command]
+pub fn get_activity_by_date(state: State<AppState>, date: String) -> Result<Vec<ActivityLog>, String> {
+    let conn = state.db.conn().lock();
+    ActivityDao::get_activity_by_date(&conn, &date).map_err(|e| e.to_string())
 }

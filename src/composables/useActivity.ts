@@ -3,10 +3,8 @@ import {
   getTodayStats,
   getTodayTotal,
   getCurrentActivity,
-  type AppStat,
-  type TodayTotal,
-  type CurrentActivity,
-} from "../utils/tauri";
+} from "../api";
+import type { AppStat, TodayTotal, CurrentActivity } from "../api/types";
 
 const todayStats = ref<AppStat[]>([]);
 const todayTotal = ref<TodayTotal>({

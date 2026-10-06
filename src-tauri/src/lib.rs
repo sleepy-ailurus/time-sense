@@ -51,7 +51,7 @@ pub fn run() {
             });
 
             // 设置托盘
-            tray::setup_tray(app.handle())?;
+            let _tray = tray::setup_tray(app.handle())?;
 
             // 启动监控循环
             let app_handle = app.handle().clone();
@@ -68,6 +68,7 @@ pub fn run() {
             commands::is_recording,
             commands::toggle_recording,
             commands::hide_main_window,
+            commands::get_activity_by_date,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

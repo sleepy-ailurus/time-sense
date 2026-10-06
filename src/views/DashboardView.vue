@@ -12,6 +12,19 @@ const {
 } = useActivity();
 
 const refreshTimer = ref<number | null>(null);
+const isRefreshing = ref(false);
+
+async function handleRefresh() {
+  if (isRefreshing.value) return;
+  isRefreshing.value = true;
+  try {
+    await Promise.all([fetchTodayStats(), fetchCurrentActivity()]);
+  } finally {
+    setTimeout(() => {
+      isRefreshing.value = false;
+    }, 300);
+  }
+}
 
 onMounted(() => {
   fetchTodayStats();
@@ -68,6 +81,12 @@ onUnmounted(() => {
     <div class="right-panel glass-card rank-card">
       <div class="rank-header">
         <span class="rank-title">应用时长排行</span>
+        <button class="refresh-btn" :class="{ spinning: isRefreshing }" @click="handleRefresh" title="立即刷新">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 12a9 9 0 1 1-3-6.7L21 8"/>
+            <path d="M21 3v5h-5"/>
+          </svg>
+        </button>
       </div>
 
       <div v-if="todayStats.length === 0" class="empty-state">
@@ -253,12 +272,43 @@ onUnmounted(() => {
 .rank-header {
   margin-bottom: 16px;
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 
 .rank-title {
   font-size: 16px;
   font-weight: 600;
   color: var(--text-primary);
+}
+
+.refresh-btn {
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-secondary);
+  border-radius: 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.refresh-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text-primary);
+}
+
+.refresh-btn.spinning svg {
+  animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 /* 应用列表 */
