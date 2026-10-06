@@ -1,5 +1,8 @@
 pub mod models;
 pub mod activity_dao;
+pub mod category_dao;
+pub mod rule_dao;
+pub mod pomodoro_dao;
 pub mod migration;
 
 use std::path::PathBuf;
@@ -10,6 +13,9 @@ use anyhow::Result;
 
 pub use models::*;
 pub use activity_dao::ActivityDao;
+pub use category_dao::CategoryDao;
+pub use rule_dao::{RuleDao, RuleMatcher};
+pub use pomodoro_dao::PomodoroDao;
 
 /// 数据库封装
 pub struct Database {

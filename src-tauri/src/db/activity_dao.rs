@@ -11,8 +11,8 @@ impl ActivityDao {
     pub fn insert(conn: &Connection, log: &ActivityLog) -> Result<i64> {
         conn.execute(
             "INSERT INTO activity_logs 
-             (process_name, window_title, start_time, end_time, duration, is_idle)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+             (process_name, window_title, start_time, end_time, duration, is_idle, category_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 log.process_name,
                 log.window_title,
@@ -20,12 +20,22 @@ impl ActivityDao {
                 log.end_time,
                 log.duration,
                 log.is_idle as i32,
+                log.category_id,
             ],
         )?;
         Ok(conn.last_insert_rowid())
     }
 
-    /// 获取今日的应用统计（按耗时倒序）
+    /// 更新活动记录的结束时间、持续时长和分类
+    pub fn update_end_time(conn: &Connection, id: i64, end_time: i64, duration: i64, category_id: Option<i64>) -> Result<()> {
+        conn.execute(
+            "UPDATE activity_logs SET end_time = ?1, duration = ?2, category_id = ?3 WHERE id = ?4",
+            params![end_time, duration, category_id, id],
+        )?;
+        Ok(())
+    }
+
+    /// 获取今日的应用统计（按耗时倒序，带分类信息）
     pub fn get_today_stats(conn: &Connection) -> Result<Vec<AppStat>> {
         let (start_of_day, _) = today_timestamp_range();
 
@@ -38,12 +48,14 @@ impl ActivityDao {
             |row| row.get(0),
         )?;
 
-        // 按进程分组统计
+        // 按进程分组统计，关联分类
         let mut stmt = conn.prepare(
-            "SELECT process_name, SUM(duration) as total
-             FROM activity_logs
-             WHERE start_time >= ?1 AND is_idle = 0
-             GROUP BY process_name
+            "SELECT al.process_name, SUM(al.duration) as total,
+                    c.id, c.name, c.color
+             FROM activity_logs al
+             LEFT JOIN categories c ON al.category_id = c.id
+             WHERE al.start_time >= ?1 AND al.is_idle = 0
+             GROUP BY al.process_name
              ORDER BY total DESC",
         )?;
 
@@ -59,6 +71,9 @@ impl ActivityDao {
                 process_name,
                 total_seconds,
                 percentage,
+                category_id: row.get(2)?,
+                category_name: row.get(3)?,
+                category_color: row.get(4)?,
             })
         })?;
 
@@ -110,7 +125,7 @@ impl ActivityDao {
         let (start_ts, end_ts) = date_timestamp_range(date)?;
 
         let mut stmt = conn.prepare(
-            "SELECT id, process_name, window_title, start_time, end_time, duration, is_idle
+            "SELECT id, process_name, window_title, start_time, end_time, duration, is_idle, category_id
              FROM activity_logs
              WHERE start_time >= ?1 AND start_time < ?2
              ORDER BY start_time ASC",
@@ -126,6 +141,7 @@ impl ActivityDao {
                 end_time: row.get(4)?,
                 duration: row.get(5)?,
                 is_idle: is_idle_int == 1,
+                category_id: row.get(7)?,
             })
         })?;
 
@@ -134,15 +150,6 @@ impl ActivityDao {
             result.push(row?);
         }
         Ok(result)
-    }
-
-    /// 更新活动记录的结束时间和持续时长
-    pub fn update_end_time(conn: &Connection, id: i64, end_time: i64, duration: i64) -> Result<()> {
-        conn.execute(
-            "UPDATE activity_logs SET end_time = ?1, duration = ?2 WHERE id = ?3",
-            params![end_time, duration, id],
-        )?;
-        Ok(())
     }
 
     /// 修复未闭合的记录（end_time = 0 或 end_time = start_time）

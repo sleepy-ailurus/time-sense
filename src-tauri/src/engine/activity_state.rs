@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use chrono::Utc;
 
-use crate::db::{ActivityDao, ActivityLog, Database};
+use crate::db::{ActivityDao, ActivityLog, Database, RuleDao, RuleMatcher, AppRule};
 use crate::monitor::WindowInfo;
 
 /// 当前活动状态
@@ -11,6 +11,7 @@ struct CurrentState {
     window_title: String,
     start_time: i64,
     is_idle: bool,
+    category_id: Option<i64>,
     /// 当前活动在数据库中的记录 ID（活动开始时立即插入）
     log_id: Option<i64>,
 }
@@ -29,6 +30,8 @@ pub struct ActivityStateMachine {
     pending_switch: Option<(String, String, i64, bool)>,
     /// 距离上次刷新数据库的 tick 计数
     flush_tick_count: u32,
+    /// 缓存的匹配规则
+    rules: Vec<AppRule>,
 }
 
 /// 每 N 次 tick 更新一次当前活动的 end_time（降低数据库写入频率）
@@ -50,12 +53,30 @@ impl ActivityStateMachine {
             }
         }
 
+        // 加载规则
+        let rules = {
+            let conn = db.conn().lock();
+            RuleDao::list_enabled(&conn).unwrap_or_default()
+        };
+        tracing::info!("Loaded {} classification rules", rules.len());
+
         Self {
             db,
             current: None,
             pending_switch: None,
             flush_tick_count: 0,
+            rules,
         }
+    }
+
+    /// 刷新规则缓存（修改规则后调用）
+    pub fn refresh_rules(&mut self) {
+        let rules = {
+            let conn = self.db.conn().lock();
+            RuleDao::list_enabled(&conn).unwrap_or_default()
+        };
+        tracing::info!("Refreshed classification rules: {} active", rules.len());
+        self.rules = rules;
     }
 
     /// 每次轮询调用，传入当前窗口信息和是否空闲
@@ -121,6 +142,14 @@ impl ActivityStateMachine {
         self.flush_tick_count = 0;
     }
 
+    /// 匹配分类
+    fn match_category(&self, process: &str, title: &str, is_idle: bool) -> Option<i64> {
+        if is_idle {
+            return None;
+        }
+        RuleMatcher::match_category(&self.rules, process, Some(title))
+    }
+
     /// 切换到新状态：关闭旧状态（更新数据库），开启新状态（立即插入数据库）
     fn switch_state(&mut self, process: String, title: String, now: i64, is_idle: bool) {
         // 如果有旧状态，更新其 end_time
@@ -129,7 +158,7 @@ impl ActivityStateMachine {
             if duration > 0 {
                 if let Some(log_id) = old.log_id {
                     let conn = self.db.conn().lock();
-                    if let Err(e) = ActivityDao::update_end_time(&conn, log_id, now, duration) {
+                    if let Err(e) = ActivityDao::update_end_time(&conn, log_id, now, duration, old.category_id) {
                         tracing::error!("Failed to update activity end time: {}", e);
                     }
                 }
@@ -140,6 +169,9 @@ impl ActivityStateMachine {
             }
         }
 
+        // 匹配分类
+        let category_id = self.match_category(&process, &title, is_idle);
+
         // 插入新活动记录（开始时即写入，duration=0 表示进行中）
         let log = ActivityLog {
             id: None,
@@ -149,6 +181,7 @@ impl ActivityStateMachine {
             end_time: now,
             duration: 0,
             is_idle,
+            category_id,
         };
 
         let log_id = {
@@ -168,6 +201,7 @@ impl ActivityStateMachine {
             window_title: title,
             start_time: now,
             is_idle,
+            category_id,
             log_id,
         });
     }
@@ -179,7 +213,7 @@ impl ActivityStateMachine {
                 let duration = now - cur.start_time;
                 if duration > 0 {
                     let conn = self.db.conn().lock();
-                    if let Err(e) = ActivityDao::update_end_time(&conn, log_id, now, duration) {
+                    if let Err(e) = ActivityDao::update_end_time(&conn, log_id, now, duration, cur.category_id) {
                         tracing::error!("Failed to flush current activity: {}", e);
                     }
                 }
@@ -194,13 +228,14 @@ impl ActivityStateMachine {
     }
 
     /// 获取当前正在进行的活动
-    pub fn get_current(&self) -> Option<(String, String, i64, bool)> {
+    pub fn get_current(&self) -> Option<(String, String, i64, bool, Option<i64>)> {
         self.current.as_ref().map(|cur| {
             (
                 cur.process_name.clone(),
                 cur.window_title.clone(),
                 cur.start_time,
                 cur.is_idle,
+                cur.category_id,
             )
         })
     }
@@ -210,5 +245,10 @@ impl ActivityStateMachine {
             Some(cur) => Utc::now().timestamp() - cur.start_time,
             None => 0,
         }
+    }
+
+    /// 获取当前活动的分类 ID
+    pub fn get_current_category_id(&self) -> Option<i64> {
+        self.current.as_ref().and_then(|cur| cur.category_id)
     }
 }

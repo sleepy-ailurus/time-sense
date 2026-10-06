@@ -1,8 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   ActivityLog,
+  AppRule,
   AppStat,
+  Category,
+  CategoryStat,
   CurrentActivity,
+  NewAppRule,
+  PomodoroSettings,
+  PomodoroStatus,
   TodayTotal,
 } from "./types";
 
@@ -79,4 +85,125 @@ export function toggleRecording(): Promise<boolean> {
  */
 export function hideMainWindow(): Promise<void> {
   return call<void>("hide_main_window");
+}
+
+// ============================================================
+// 分类相关
+// ============================================================
+
+/** 获取所有分类 */
+export function getCategories(): Promise<Category[]> {
+  return call<Category[]>("get_categories");
+}
+
+/** 获取今日分类统计 */
+export function getTodayCategoryStats(): Promise<CategoryStat[]> {
+  return call<CategoryStat[]>("get_today_category_stats");
+}
+
+/** 新增分类 */
+export function createCategory(params: {
+  name: string;
+  color: string;
+  icon?: string;
+}): Promise<number> {
+  return call<number>("create_category", params);
+}
+
+/** 更新分类 */
+export function updateCategory(params: {
+  id: number;
+  name: string;
+  color: string;
+  icon?: string;
+}): Promise<void> {
+  return call<void>("update_category", params);
+}
+
+/** 删除分类 */
+export function deleteCategory(id: number): Promise<void> {
+  return call<void>("delete_category", { id });
+}
+
+// ============================================================
+// 规则相关
+// ============================================================
+
+/** 获取所有规则 */
+export function getRules(): Promise<AppRule[]> {
+  return call<AppRule[]>("get_rules");
+}
+
+/** 新增规则 */
+export function createRule(rule: NewAppRule): Promise<number> {
+  return call<number>("create_rule", { rule });
+}
+
+/** 更新规则 */
+export function updateRule(id: number, rule: NewAppRule): Promise<void> {
+  return call<void>("update_rule", { id, rule });
+}
+
+/** 删除规则 */
+export function deleteRule(id: number): Promise<void> {
+  return call<void>("delete_rule", { id });
+}
+
+/** 切换规则启用状态 */
+export function toggleRule(id: number): Promise<boolean> {
+  return call<boolean>("toggle_rule", { id });
+}
+
+/** 刷新规则缓存 */
+export function refreshRules(): Promise<void> {
+  return call<void>("refresh_rules");
+}
+
+// ============================================================
+// 番茄钟相关
+// ============================================================
+
+/** 获取番茄钟状态 */
+export function getPomodoroStatus(): Promise<PomodoroStatus> {
+  return call<PomodoroStatus>("get_pomodoro_status");
+}
+
+/** 获取番茄钟设置 */
+export function getPomodoroSettings(): Promise<PomodoroSettings> {
+  return call<PomodoroSettings>("get_pomodoro_settings");
+}
+
+/** 更新番茄钟设置 */
+export function updatePomodoroSettings(settings: PomodoroSettings): Promise<void> {
+  return call<void>("update_pomodoro_settings", { settings });
+}
+
+/** 开始专注 */
+export function startPomodoroFocus(): Promise<PomodoroStatus> {
+  return call<PomodoroStatus>("start_pomodoro_focus");
+}
+
+/** 开始休息 */
+export function startPomodoroBreak(long?: boolean): Promise<PomodoroStatus> {
+  return call<PomodoroStatus>("start_pomodoro_break", { long });
+}
+
+/** 停止番茄钟 */
+export function stopPomodoro(): Promise<PomodoroStatus> {
+  return call<PomodoroStatus>("stop_pomodoro");
+}
+
+/** 暂停番茄钟 */
+export function pausePomodoro(): Promise<PomodoroStatus> {
+  return call<PomodoroStatus>("pause_pomodoro");
+}
+
+/** 继续番茄钟 */
+export function resumePomodoro(): Promise<PomodoroStatus> {
+  return call<PomodoroStatus>("resume_pomodoro");
+}
+
+/** 跳过当前阶段 */
+export function skipPomodoro(): Promise<PomodoroStatus> {
+  return call<PomodoroStatus>("skip_pomodoro");
 }

@@ -1,7 +1,53 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from "vue";
+import { ref, onMounted, onUnmounted, computed, defineAsyncComponent, markRaw, watch } from "vue";
 import { formatDuration } from "../utils/format";
+import {
+  anchorTimeline,
+  createTimeline,
+  elapsedAt,
+  freezeTimeline,
+  formatRemaining,
+  msUntilNextTick,
+  remainingMs,
+} from "../utils/pomodoroTimer";
 import { useActivity } from "../composables/useActivity";
+import { listen } from "@tauri-apps/api/event";
+import {
+  getTodayCategoryStats,
+  getPomodoroStatus,
+  startPomodoroFocus,
+  stopPomodoro,
+  pausePomodoro,
+  resumePomodoro,
+  skipPomodoro,
+} from "../api";
+import type { CategoryStat, PomodoroStatus } from "../api/types";
+import {
+  Timer,
+  Clock,
+  Monitor,
+  TrendingUp,
+  Briefcase,
+  BookOpen,
+  Gamepad2,
+  MessageCircle,
+  MoreHorizontal,
+  Folder,
+} from "lucide-vue-next";
+
+// Lucide 图标映射（用于从后端返回的图标名动态渲染）
+const iconMap: Record<string, any> = {
+  Briefcase: markRaw(Briefcase),
+  BookOpen: markRaw(BookOpen),
+  Gamepad2: markRaw(Gamepad2),
+  MessageCircle: markRaw(MessageCircle),
+  MoreHorizontal: markRaw(MoreHorizontal),
+  Folder: markRaw(Folder),
+};
+
+function getCategoryIcon(name?: string | null) {
+  return iconMap[name || ""] || Folder;
+}
 
 const {
   todayTotal,
@@ -11,14 +57,224 @@ const {
   fetchCurrentActivity,
 } = useActivity();
 
+const categoryStats = ref<CategoryStat[]>([]);
+const pomodoroStatus = ref<PomodoroStatus | null>(null);
 const refreshTimer = ref<number | null>(null);
 const isRefreshing = ref(false);
+
+// 本地秒级计时器，驱动「当前活动时长」实时刷新（不依赖后端轮询）
+const tickNow = ref(Date.now());
+let tickTimer: number | null = null;
+
+// 番茄钟计时时间轴：锚点(已用毫秒 @ 本地时刻) + 真实流逝时间。
+// 只在这里维护，显示层统一向上取整，避免暂停/恢复出现 ±1 秒
+const pomodoroTimeline = createTimeline();
+// 番茄钟自己的时钟采样点：由对齐到秒边界的定时器驱动
+const pomodoroTickNow = ref(Date.now());
+let pomodoroTickTimer: number | null = null;
+
+function getPomodoroTargetMs(): number {
+  return (pomodoroStatus.value?.targetSeconds || 0) * 1000;
+}
+
+/** 当前已用毫秒（暂停时保持冻结值不变） */
+function getPomodoroElapsedMs(): number {
+  const s = pomodoroStatus.value;
+  if (!s?.isRunning) return 0;
+  return elapsedAt(pomodoroTimeline, pomodoroTickNow.value, s.isPaused);
+}
+
+const pomodoroProgress = computed(() => {
+  if (!pomodoroStatus.value || !pomodoroStatus.value.targetSeconds) return 0;
+  const target = pomodoroStatus.value.targetSeconds;
+  const elapsed = getPomodoroElapsedMs() / 1000;
+  return Math.min((elapsed / target) * 100, 100);
+});
+
+const pomodoroTimeDisplay = computed(() => {
+  if (!pomodoroStatus.value) return "00:00";
+  const s = pomodoroStatus.value;
+  if (!s.isRunning) {
+    // 空闲：显示设置的目标时长
+    return formatRemaining((s.targetSeconds || 0) * 1000);
+  }
+  return formatRemaining(remainingMs(getPomodoroElapsedMs(), getPomodoroTargetMs()));
+});
+
+const pomodoroPhaseLabel = computed(() => {
+  if (!pomodoroStatus.value?.isRunning) return "未开始";
+  switch (pomodoroStatus.value.sessionType) {
+    case "focus":
+      return "专注中";
+    case "short_break":
+      return "短休息";
+    case "long_break":
+      return "长休息";
+    default:
+      return "";
+  }
+});
+
+const pomodoroPhaseColor = computed(() => {
+  if (!pomodoroStatus.value?.isRunning) return "#6B7280";
+  switch (pomodoroStatus.value.sessionType) {
+    case "focus":
+      return "#8B5CF6";
+    case "short_break":
+      return "#10B981";
+    case "long_break":
+      return "#3B82F6";
+    default:
+      return "#6B7280";
+  }
+});
+
+// 当前活动计时基准
+let activityBaselineAt = 0;
+let activityBaselineDuration = 0;
+
+function updateActivityBaseline() {
+  const act = currentActivity.value;
+  if (!act) {
+    activityBaselineAt = 0;
+    activityBaselineDuration = 0;
+    return;
+  }
+  activityBaselineAt = Date.now();
+  activityBaselineDuration = act.duration || 0;
+}
+
+// 当前活动实时时长（以基准为锚点，本地累加）
+const currentDurationLive = computed(() => {
+  const act = currentActivity.value;
+  if (!act) return 0;
+  if (act.isIdle) {
+    return activityBaselineDuration;
+  }
+  const elapsedLocal = Math.floor((tickNow.value - activityBaselineAt) / 1000);
+  return activityBaselineDuration + elapsedLocal;
+});
+
+// 番茄钟状态变化时，更新本地计时基准
+// - 开始/停止/阶段切换：用后端的已用毫秒重新锚定
+// - 暂停：冻结在「此刻屏幕上显示的那个数字」上，之后不再前进
+// - 恢复：从冻结值继续，一秒不多一秒不少
+// - 普通轮询：不重新锚定（本地时钟同一台机器，不会累积漂移）
+let lastPomodoroPhase = ""; // 追踪核心状态：running + sessionType + target
+let lastWasPaused = false;
+
+function getPomodoroPhaseKey(s: PomodoroStatus | null): string {
+  if (!s) return "null";
+  return `${s.isRunning}-${s.sessionType || "idle"}-${s.targetSeconds}`;
+}
+
+watch(pomodoroStatus, (newStatus) => {
+  const newPhase = getPomodoroPhaseKey(newStatus);
+  const newIsPaused = newStatus?.isPaused ?? false;
+  const nowMs = Date.now();
+
+  if (newPhase !== lastPomodoroPhase) {
+    // 核心状态变了（开始/停止/阶段切换）→ 用后端的已用毫秒重新锚定
+    anchorTimeline(pomodoroTimeline, statusElapsedMs(newStatus), nowMs);
+  } else if (newIsPaused && !lastWasPaused) {
+    // 刚进入暂停 → 冻结当前时刻的已用时长（与屏幕上的数字一致）
+    freezeTimeline(pomodoroTimeline, nowMs);
+  } else if (!newIsPaused && lastWasPaused && newStatus?.isRunning) {
+    // 刚恢复 → 以冻结值为锚点继续
+    anchorTimeline(pomodoroTimeline, pomodoroTimeline.frozenMs, nowMs);
+  }
+
+  lastPomodoroPhase = newPhase;
+  lastWasPaused = newIsPaused;
+  // 立即用新锚点刷新一次，并把下一次刷新对齐到秒边界
+  pomodoroTickNow.value = nowMs;
+  schedulePomodoroTick();
+});
+
+/** 后端状态里的已用毫秒（兼容旧版本后端只返回秒） */
+function statusElapsedMs(status: PomodoroStatus | null): number {
+  if (!status) return 0;
+  if (typeof status.elapsedMs === "number") return status.elapsedMs;
+  return (status.elapsedSeconds || 0) * 1000;
+}
+
+/**
+ * 把刷新定时器对齐到「显示数字下一次变化」的时刻。
+ * 暂停/空闲时不需要刷新；归零后等后端的阶段切换事件。
+ */
+function schedulePomodoroTick() {
+  if (pomodoroTickTimer !== null) {
+    clearTimeout(pomodoroTickTimer);
+    pomodoroTickTimer = null;
+  }
+  const s = pomodoroStatus.value;
+  if (!s?.isRunning || s.isPaused) return;
+
+  const remainMs = remainingMs(
+    elapsedAt(pomodoroTimeline, Date.now(), false),
+    getPomodoroTargetMs(),
+  );
+  if (remainMs <= 0) return;
+
+  // +5ms 余量，避免定时器略微提前导致这一拍没变化
+  pomodoroTickTimer = window.setTimeout(() => {
+    pomodoroTickTimer = null;
+    pomodoroTickNow.value = Date.now();
+    schedulePomodoroTick();
+  }, Math.max(20, msUntilNextTick(remainMs) + 5));
+}
+
+/** 窗口回到前台/重新可见时，两个计时器都立刻用真实时间校准一次 */
+function handleTimerResync() {
+  const nowMs = Date.now();
+  tickNow.value = nowMs;
+  pomodoroTickNow.value = nowMs;
+  schedulePomodoroTick();
+}
+
+// 当前活动变化时，更新活动计时基准
+// 同样：只在活动切换或空闲状态变化时重置，普通轮询不重置
+let lastActivityFingerprint = "";
+
+function getActivityFingerprint(act: any): string {
+  if (!act) return "null";
+  return `${act.processName}-${act.windowTitle}-${act.isIdle}`;
+}
+
+watch(currentActivity, () => {
+  const newFp = getActivityFingerprint(currentActivity.value);
+  if (newFp !== lastActivityFingerprint) {
+    updateActivityBaseline();
+    lastActivityFingerprint = newFp;
+  }
+}, { deep: true });
+
+async function fetchCategoryStats() {
+  try {
+    categoryStats.value = await getTodayCategoryStats();
+  } catch (e) {
+    console.error("加载分类统计失败", e);
+  }
+}
+
+async function fetchPomodoroStatus() {
+  try {
+    pomodoroStatus.value = await getPomodoroStatus();
+  } catch (e) {
+    console.error("加载番茄钟状态失败", e);
+  }
+}
 
 async function handleRefresh() {
   if (isRefreshing.value) return;
   isRefreshing.value = true;
   try {
-    await Promise.all([fetchTodayStats(), fetchCurrentActivity()]);
+    await Promise.all([
+      fetchTodayStats(),
+      fetchCurrentActivity(),
+      fetchCategoryStats(),
+      fetchPomodoroStatus(),
+    ]);
   } finally {
     setTimeout(() => {
       isRefreshing.value = false;
@@ -26,98 +282,237 @@ async function handleRefresh() {
   }
 }
 
+async function handleStartPomodoro() {
+  pomodoroStatus.value = await startPomodoroFocus();
+}
+
+async function handlePausePomodoro() {
+  pomodoroStatus.value = await pausePomodoro();
+}
+
+async function handleResumePomodoro() {
+  pomodoroStatus.value = await resumePomodoro();
+}
+
+async function handleStopPomodoro() {
+  pomodoroStatus.value = await stopPomodoro();
+}
+
+async function handleSkipPomodoro() {
+  pomodoroStatus.value = await skipPomodoro();
+}
+
 onMounted(() => {
   fetchTodayStats();
   fetchCurrentActivity();
+  fetchCategoryStats();
+  fetchPomodoroStatus();
+
+  // 每 10 秒自动刷新后端数据
   refreshTimer.value = window.setInterval(() => {
     fetchTodayStats();
     fetchCurrentActivity();
+    fetchCategoryStats();
+    fetchPomodoroStatus();
   }, 10000);
+
+  // 本地秒级计时器，驱动「当前活动时长」实时刷新
+  tickTimer = window.setInterval(() => {
+    tickNow.value = Date.now();
+  }, 1000);
+
+  // 窗口重新可见/获得焦点时立即校准（后台节流会让定时器延迟）
+  window.addEventListener("focus", handleTimerResync);
+  document.addEventListener("visibilitychange", handleTimerResync);
+
+  // 监听后端番茄钟状态变化（托盘操作 / 阶段切换时立即更新）
+  listen<PomodoroStatus>("pomodoro://status-changed", (event) => {
+    if (event.payload) {
+      pomodoroStatus.value = event.payload;
+    }
+  });
 });
 
 onUnmounted(() => {
   if (refreshTimer.value) {
     clearInterval(refreshTimer.value);
   }
+  if (tickTimer) {
+    clearInterval(tickTimer);
+  }
+  if (pomodoroTickTimer !== null) {
+    clearTimeout(pomodoroTickTimer);
+  }
+  window.removeEventListener("focus", handleTimerResync);
+  document.removeEventListener("visibilitychange", handleTimerResync);
 });
 </script>
 
 <template>
   <div class="dashboard">
-    <!-- 左侧栏 -->
-    <div class="left-panel">
-      <!-- 今日总时长卡片 -->
-      <div class="glass-card total-card">
-        <div class="total-glow"></div>
-        <div class="total-number">
-          <span class="num">{{ Math.floor(todayTotal.activeSeconds / 3600) }}</span>
+    <!-- 左栏 -->
+    <div class="left-col">
+      <!-- 总时长卡片 -->
+      <div class="card total-card">
+        <div class="card-label">今日活跃时长</div>
+        <div class="total-time">
+          <span class="hours">{{ Math.floor(todayTotal.activeSeconds / 3600) }}</span>
           <span class="unit">h</span>
-          <span class="num">{{ Math.floor((todayTotal.activeSeconds % 3600) / 60) }}</span>
+          <span class="minutes">{{ Math.floor((todayTotal.activeSeconds % 3600) / 60) }}</span>
           <span class="unit">m</span>
         </div>
-        <div class="total-label">今日活跃时长</div>
-        <div class="idle-info">
-          空闲 {{ formatDuration(todayTotal.idleSeconds) }}
+        <div class="total-sub">
+          <span class="idle-time">空闲 {{ formatDuration(todayTotal.idleSeconds) }}</span>
+        </div>
+        <div class="glow-orb"></div>
+      </div>
+
+      <!-- 番茄钟卡片 -->
+      <div class="card pomodoro-card" :style="{ '--pom-color': pomodoroPhaseColor }">
+        <div class="pomodoro-header">
+          <Timer class="pomodoro-icon" :size="18" :stroke-width="1.8" />
+          <span class="pomodoro-title">番茄钟</span>
+          <span class="pomodoro-phase" v-if="pomodoroStatus?.isRunning">
+            {{ pomodoroPhaseLabel }}
+          </span>
+        </div>
+
+        <div class="pomodoro-timer">
+          <svg class="timer-ring" viewBox="0 0 120 120">
+            <circle class="ring-bg" cx="60" cy="60" r="52" />
+            <circle
+              class="ring-progress"
+              cx="60"
+              cy="60"
+              r="52"
+              :stroke-dasharray="326.7"
+              :stroke-dashoffset="326.7 - (326.7 * pomodoroProgress) / 100"
+              :style="{ stroke: pomodoroPhaseColor }"
+            />
+          </svg>
+          <div class="timer-text">
+            <div class="timer-time">{{ pomodoroTimeDisplay }}</div>
+            <div class="timer-count">
+              今日 {{ pomodoroStatus?.todayFocusCount || 0 }} 个
+            </div>
+          </div>
+        </div>
+
+        <div class="pomodoro-actions">
+          <button
+            v-if="!pomodoroStatus?.isRunning"
+            class="pom-btn start"
+            @click="handleStartPomodoro"
+          >
+            开始专注
+          </button>
+          <template v-else-if="pomodoroStatus?.isPaused">
+            <button class="pom-btn resume" @click="handleResumePomodoro">继续</button>
+            <button class="pom-btn stop" @click="handleStopPomodoro">停止</button>
+          </template>
+          <template v-else>
+            <button class="pom-btn pause" @click="handlePausePomodoro">暂停</button>
+            <button class="pom-btn skip" @click="handleSkipPomodoro">跳过</button>
+            <button class="pom-btn stop" @click="handleStopPomodoro">停止</button>
+          </template>
         </div>
       </div>
 
-      <!-- 当前活动卡片 -->
-      <div v-if="currentActivity" class="glass-card current-card">
-        <div class="current-label">当前活动</div>
-        <div class="current-app">{{ currentActivity.processName }}</div>
-        <div class="current-title">{{ currentActivity.windowTitle }}</div>
+      <!-- 当前活动 -->
+      <div class="card current-card" v-if="currentActivity">
+        <div class="current-label">
+          <span class="dot" :class="{ idle: currentActivity.isIdle }"></span>
+          {{ currentActivity.isIdle ? "空闲中" : "当前活动" }}
+        </div>
+        <div class="current-name">{{ currentActivity.processName }}</div>
+        <div class="current-title">{{ currentActivity.windowTitle || "—" }}</div>
         <div class="current-duration">
-          已持续 <span class="accent-text">{{ formatDuration(currentActivity.duration) }}</span>
+          {{ formatDuration(currentDurationLive) }}
+          <span v-if="currentActivity.categoryName" class="current-cat">
+            · {{ currentActivity.categoryName }}
+          </span>
         </div>
-      </div>
-
-      <div v-else class="glass-card current-card empty-current">
-        <div class="current-label">当前活动</div>
-        <div class="empty-text">暂无活动数据</div>
       </div>
     </div>
 
-    <!-- 右侧栏：应用排行 -->
-    <div class="right-panel glass-card rank-card">
-      <div class="rank-header">
-        <span class="rank-title">应用时长排行</span>
-        <button class="refresh-btn" :class="{ spinning: isRefreshing }" @click="handleRefresh" title="立即刷新">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 12a9 9 0 1 1-3-6.7L21 8"/>
-            <path d="M21 3v5h-5"/>
-          </svg>
-        </button>
-      </div>
+    <!-- 右栏 -->
+    <div class="right-col">
+      <!-- 应用排行 -->
+      <div class="card apps-card">
+        <div class="card-header">
+          <span class="card-title">应用耗时排行</span>
+          <button class="refresh-btn" @click="handleRefresh" :class="{ spinning: isRefreshing }">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <path
+                d="M11.6667 7.00033C11.6667 9.57775 9.57738 11.667 7.00004 11.667C4.42266 11.667 2.33337 9.57775 2.33337 7.00033C2.33337 4.42291 4.42266 2.33362 7.00004 2.33362C8.47626 2.33362 9.80455 3.0274 10.6807 4.12695M10.6667 1.16699V3.50033M10.6667 3.50033H8.33337"
+                stroke="currentColor"
+                stroke-width="1.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </button>
+        </div>
 
-      <div v-if="todayStats.length === 0" class="empty-state">
-        <div class="empty-icon">⏱</div>
-        <div class="empty-text">今天还没有数据</div>
-        <div class="empty-sub">开始使用应用后这里会显示统计</div>
-      </div>
+        <div v-if="todayStats.length === 0" class="empty-state">
+          <div class="empty-icon">⏱️</div>
+          <div class="empty-text">暂无数据</div>
+        </div>
 
-      <div v-else class="app-list">
-        <div
-          v-for="(app, index) in todayStats.slice(0, 8)"
-          :key="app.processName"
-          class="app-item"
-        >
-          <div class="app-rank">
-            <span
-              class="rank-badge"
-              :class="{ 'rank-top': index < 3 }"
-            >{{ index + 1 }}</span>
-          </div>
-          <div class="app-info">
-            <div class="app-name-row">
-              <span class="app-name">{{ app.processName }}</span>
-              <span class="app-time">{{ formatDuration(app.totalSeconds) }}</span>
+        <div v-else class="app-list">
+          <div
+            v-for="(app, index) in todayStats.slice(0, 8)"
+            :key="app.processName"
+            class="app-item"
+          >
+            <div class="app-rank">{{ index + 1 }}</div>
+            <div class="app-info">
+              <div class="app-name-row">
+                <span class="app-name">{{ app.processName }}</span>
+                <span class="app-duration">{{ formatDuration(app.totalSeconds) }}</span>
+              </div>
+              <div class="progress-bar">
+                <div
+                  class="progress-fill"
+                  :style="{
+                    width: app.percentage + '%',
+                    background: app.categoryColor || 'linear-gradient(90deg, #8B5CF6, #EC4899)',
+                  }"
+                ></div>
+              </div>
             </div>
-            <div class="progress-bar">
+          </div>
+        </div>
+      </div>
+
+      <!-- 分类排行 -->
+      <div class="card categories-card">
+        <div class="card-header">
+          <span class="card-title">分类统计</span>
+        </div>
+
+        <div v-if="categoryStats.length === 0" class="empty-state small">
+          <div class="empty-text">暂无分类数据</div>
+        </div>
+
+        <div v-else class="category-mini-list">
+          <div
+            v-for="cat in categoryStats.slice(0, 5)"
+            :key="cat.categoryId"
+            class="cat-mini-item"
+          >
+            <component :is="getCategoryIcon(cat.categoryIcon)" class="cat-mini-icon" :size="14" :stroke-width="1.8" :style="{ color: cat.categoryColor }" />
+            <span class="cat-mini-name">{{ cat.categoryName }}</span>
+            <div class="cat-mini-bar">
               <div
-                class="progress-fill"
-                :style="{ width: app.percentage + '%' }"
+                class="cat-mini-fill"
+                :style="{
+                  width: cat.percentage + '%',
+                  background: cat.categoryColor,
+                }"
               ></div>
             </div>
+            <span class="cat-mini-time">{{ formatDuration(cat.totalSeconds) }}</span>
           </div>
         </div>
       </div>
@@ -127,228 +522,401 @@ onUnmounted(() => {
 
 <style scoped>
 .dashboard {
-  width: 100%;
-  height: 100%;
   display: flex;
-  gap: 14px;
+  gap: 12px;
+  height: 100%;
 }
 
-/* ===== 左侧栏 ===== */
-.left-panel {
-  width: 42%;
+.left-col {
+  width: 200px;
+  flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
 }
 
-/* ===== 总时长卡片 ===== */
-.total-card {
+.right-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.card {
+  background: rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(20px);
+  border: 1px solid var(--border-glass);
+  border-radius: 14px;
+  padding: 14px;
   position: relative;
-  padding: 24px 20px;
-  text-align: center;
   overflow: hidden;
 }
 
-.total-glow {
-  position: absolute;
-  top: -40%;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 200px;
-  height: 200px;
-  background: radial-gradient(
-    circle,
-    var(--accent-glow) 0%,
-    transparent 70%
-  );
-  pointer-events: none;
-  filter: blur(20px);
+/* 总时长卡片 */
+.total-card {
+  text-align: center;
 }
 
-.total-number {
-  position: relative;
+.card-label {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 8px;
+}
+
+.total-time {
   display: flex;
   align-items: baseline;
   justify-content: center;
   gap: 2px;
-  margin-bottom: 8px;
 }
 
-.total-number .num {
-  font-size: 56px;
+.hours {
+  font-size: 42px;
   font-weight: 700;
-  line-height: 1.1;
-  background: var(--accent-gradient);
+  background: linear-gradient(135deg, #a78bfa, #f472b6);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
-  letter-spacing: -1px;
+  line-height: 1;
+  text-shadow: 0 0 30px rgba(139, 92, 246, 0.5);
 }
 
-.total-number .unit {
-  font-size: 24px;
-  font-weight: 500;
-  color: var(--accent-primary);
-  margin: 0 2px;
+.minutes {
+  font-size: 28px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1;
 }
 
-.total-label {
-  position: relative;
+.unit {
   font-size: 14px;
-  color: var(--text-secondary);
-  margin-bottom: 6px;
+  color: var(--text-tertiary);
+  margin-right: 4px;
 }
 
-.idle-info {
-  position: relative;
-  font-size: 12px;
+.total-sub {
+  margin-top: 8px;
+  font-size: 11px;
   color: var(--text-tertiary);
 }
 
-/* ===== 当前活动卡片 ===== */
-.current-card {
-  padding: 16px 18px;
+.idle-time {
+  opacity: 0.7;
+}
+
+.glow-orb {
+  position: absolute;
+  width: 120px;
+  height: 120px;
+  background: radial-gradient(circle, rgba(139, 92, 246, 0.25), transparent 70%);
+  top: -30px;
+  right: -30px;
+  pointer-events: none;
+}
+
+/* 番茄钟卡片 */
+.pomodoro-card {
+  text-align: center;
+}
+
+.pomodoro-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.pomodoro-icon {
+  font-size: 16px;
+}
+
+.pomodoro-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.pomodoro-phase {
+  font-size: 10px;
+  padding: 2px 6px;
+  background: var(--pom-color);
+  color: white;
+  border-radius: 4px;
+  font-weight: 500;
+}
+
+.pomodoro-timer {
+  position: relative;
+  width: 120px;
+  height: 120px;
+  margin: 0 auto 12px;
+}
+
+.timer-ring {
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+}
+
+.ring-bg {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.08);
+  stroke-width: 6;
+}
+
+.ring-progress {
+  fill: none;
+  stroke-width: 6;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.5s ease;
+  filter: drop-shadow(0 0 6px currentColor);
+}
+
+.timer-text {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+}
+
+.timer-time {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-family: "SF Mono", Menlo, monospace;
+}
+
+.timer-count {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  margin-top: 2px;
+}
+
+.pomodoro-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.pom-btn {
   flex: 1;
+  padding: 7px 0;
+  border: 1px solid var(--border-glass);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-secondary);
+  border-radius: 8px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.pom-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+}
+
+.pom-btn.start {
+  background: linear-gradient(135deg, #8b5cf6, #ec4899);
+  color: white;
+  border: none;
+}
+
+.pom-btn.start:hover {
+  box-shadow: 0 2px 8px rgba(139, 92, 246, 0.4);
+}
+
+.pom-btn.pause {
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.pom-btn.pause:hover {
+  background: rgba(245, 158, 11, 0.25);
+}
+
+.pom-btn.resume {
+  background: linear-gradient(135deg, #10b981, #059669);
+  color: white;
+  border: none;
+}
+
+.pom-btn.resume:hover {
+  box-shadow: 0 2px 8px rgba(16, 185, 129, 0.4);
+}
+
+/* 当前活动卡片 */
+.current-card {
+  font-size: 12px;
 }
 
 .current-label {
-  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
   color: var(--text-tertiary);
-  margin-bottom: 10px;
-  letter-spacing: 0.5px;
+  margin-bottom: 6px;
 }
 
-.current-app {
-  font-size: 18px;
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #10b981;
+  animation: pulse 2s infinite;
+}
+
+.dot.idle {
+  background: #f59e0b;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+.current-name {
+  font-size: 13px;
   font-weight: 600;
   color: var(--text-primary);
-  margin-bottom: 4px;
+  margin-bottom: 2px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .current-title {
-  font-size: 12px;
-  color: var(--text-secondary);
-  margin-bottom: 12px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-bottom: 8px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .current-duration {
-  font-size: 13px;
+  font-size: 11px;
   color: var(--text-secondary);
 }
 
-.accent-text {
-  color: var(--accent-primary);
-  font-weight: 600;
-  font-size: 15px;
-}
-
-.empty-current {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-}
-
-.empty-text {
-  text-align: center;
+.current-cat {
   color: var(--text-tertiary);
-  font-size: 13px;
 }
 
-/* ===== 右侧栏 ===== */
-.right-panel {
-  flex: 1;
+/* 应用排行 */
+.card-header {
   display: flex;
-  flex-direction: column;
-  padding: 18px 20px;
-  overflow: hidden;
-}
-
-.rank-header {
-  margin-bottom: 16px;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
   justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
 }
 
-.rank-title {
-  font-size: 16px;
+.card-title {
+  font-size: 13px;
   font-weight: 600;
   color: var(--text-primary);
 }
 
 .refresh-btn {
-  width: 28px;
-  height: 28px;
-  border: none;
-  background: rgba(255, 255, 255, 0.06);
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border-glass);
+  background: transparent;
   color: var(--text-secondary);
-  border-radius: 8px;
+  border-radius: 6px;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.2s ease;
+  transition: all 0.15s ease;
 }
 
 .refresh-btn:hover {
-  background: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.08);
   color: var(--text-primary);
 }
 
 .refresh-btn.spinning svg {
-  animation: spin 0.6s linear infinite;
+  animation: spin 0.6s linear;
 }
 
 @keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
-/* 应用列表 */
+.empty-state {
+  text-align: center;
+  padding: 24px 0;
+  color: var(--text-tertiary);
+}
+
+.empty-state.small {
+  padding: 14px 0;
+}
+
+.empty-icon {
+  font-size: 28px;
+  margin-bottom: 6px;
+  opacity: 0.5;
+}
+
+.empty-text {
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
 .app-list {
-  flex: 1;
-  overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding-right: 4px;
+  gap: 10px;
 }
 
 .app-item {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
 }
 
 .app-rank {
-  flex-shrink: 0;
-}
-
-.rank-badge {
+  width: 18px;
+  height: 18px;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.08);
+  font-size: 10px;
+  font-weight: 600;
   color: var(--text-tertiary);
-  font-size: 12px;
-  font-weight: 500;
-  border: 1px solid var(--border-glass);
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  flex-shrink: 0;
 }
 
-.rank-badge.rank-top {
-  background: rgba(233, 69, 96, 0.15);
-  color: var(--accent-primary);
-  border-color: rgba(233, 69, 96, 0.3);
+.app-item:nth-child(1) .app-rank {
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+  color: white;
+}
+.app-item:nth-child(2) .app-rank {
+  background: linear-gradient(135deg, #9ca3af, #6b7280);
+  color: white;
+}
+.app-item:nth-child(3) .app-rank {
+  background: linear-gradient(135deg, #b45309, #92400e);
+  color: white;
 }
 
 .app-info {
@@ -358,60 +926,89 @@ onUnmounted(() => {
 
 .app-name-row {
   display: flex;
-  align-items: center;
   justify-content: space-between;
-  margin-bottom: 6px;
+  align-items: center;
+  margin-bottom: 4px;
 }
 
 .app-name {
-  font-size: 13px;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  flex: 1;
-  margin-right: 8px;
+  max-width: 60%;
 }
 
-.app-time {
-  font-size: 12px;
+.app-duration {
+  font-size: 11px;
   color: var(--text-secondary);
+  font-family: monospace;
   flex-shrink: 0;
-  font-variant-numeric: tabular-nums;
 }
 
 .progress-bar {
   height: 4px;
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.06);
   border-radius: 2px;
   overflow: hidden;
 }
 
 .progress-fill {
   height: 100%;
-  background: var(--accent-gradient);
   border-radius: 2px;
-  transition: width 0.3s ease;
+  transition: width 0.5s ease;
 }
 
-/* 空状态 */
-.empty-state {
-  flex: 1;
+/* 分类排行 */
+.category-mini-list {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
   gap: 8px;
+}
+
+.cat-mini-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.cat-mini-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.cat-mini-name {
+  color: var(--text-secondary);
+  width: 50px;
+  flex-shrink: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cat-mini-bar {
+  flex: 1;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.cat-mini-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.5s ease;
+}
+
+.cat-mini-time {
   color: var(--text-tertiary);
-}
-
-.empty-icon {
-  font-size: 32px;
-  opacity: 0.5;
-}
-
-.empty-sub {
-  font-size: 12px;
-  opacity: 0.6;
+  font-family: monospace;
+  font-size: 10px;
+  flex-shrink: 0;
+  min-width: 35px;
+  text-align: right;
 }
 </style>

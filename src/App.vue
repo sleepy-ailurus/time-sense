@@ -1,18 +1,36 @@
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount } from "vue";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { onMounted, onBeforeUnmount, computed, markRaw } from "vue";
+import { useRoute, useRouter } from "vue-router";
+import { getCurrentWindow, LogicalPosition } from "@tauri-apps/api/window";
 import { hideMainWindow } from "./api";
+import { LayoutDashboard, PieChart, Filter, Settings, ChevronDown } from "lucide-vue-next";
 
+const route = useRoute();
+const router = useRouter();
 const win = getCurrentWindow();
 let unlistenMoved: (() => void) | null = null;
 let unlistenBlur: (() => void) | null = null;
+let blurHideTimer: ReturnType<typeof setTimeout> | null = null;
+
+const navItems = computed(() => [
+  { path: "/", title: "概览", icon: markRaw(LayoutDashboard) },
+  { path: "/categories", title: "分类统计", icon: markRaw(PieChart) },
+  { path: "/rules", title: "规则管理", icon: markRaw(Filter) },
+  { path: "/settings", title: "设置", icon: markRaw(Settings) },
+]);
+
+function navigate(path: string) {
+  void router.push(path);
+}
 
 // 位置记忆：保存窗口位置到 localStorage
 function saveWindowPosition() {
   win.innerPosition().then((pos) => {
     localStorage.setItem("timesense_window_x", String(pos.x));
     localStorage.setItem("timesense_window_y", String(pos.y));
-  }).catch(() => {});
+  }).catch(() => {
+    // 忽略获取位置失败
+  });
 }
 
 // 位置记忆：从 localStorage 还原窗口位置
@@ -21,7 +39,7 @@ async function restoreWindowPosition() {
   const y = localStorage.getItem("timesense_window_y");
   if (x && y) {
     try {
-      await win.setPosition({ x: Number(x), y: Number(y) });
+      await win.setPosition(new LogicalPosition(Number(x), Number(y)));
     } catch {
       // 位置无效时忽略（比如屏幕分辨率变了）
     }
@@ -44,22 +62,38 @@ onMounted(async () => {
     unlistenMoved = await win.onMoved(() => {
       saveWindowPosition();
     });
-  } catch {}
+  } catch {
+    // 监听移动事件失败，不影响主功能
+  }
 
   // 失去焦点自动隐藏
   try {
-    unlistenBlur = await win.onBlur(() => {
-      // 延迟一点再隐藏，避免因为点击托盘导致瞬间失焦又隐藏
-      setTimeout(() => {
-        // 再次确认是否真的失焦了
-        win.isFocused().then((focused) => {
-          if (!focused) {
-            hideMainWindow();
+    unlistenBlur = await win.onFocusChanged(async ({ payload: focused }) => {
+      if (focused) {
+        // 重新获得焦点：清除待执行的隐藏定时器
+        if (blurHideTimer) {
+          clearTimeout(blurHideTimer);
+          blurHideTimer = null;
+        }
+      } else {
+        // 失去焦点：延迟 150ms 后检查，避免短暂失焦就隐藏
+        blurHideTimer = setTimeout(async () => {
+          try {
+            const stillFocused = await win.isFocused();
+            if (!stillFocused) {
+              hideMainWindow();
+            }
+          } catch {
+            // 忽略查询焦点状态失败
+          } finally {
+            blurHideTimer = null;
           }
-        }).catch(() => {});
-      }, 150);
+        }, 150);
+      }
     });
-  } catch {}
+  } catch {
+    // 监听焦点事件失败，不影响主功能
+  }
 
   // Esc 键监听
   window.addEventListener("keydown", handleKeydown);
@@ -68,37 +102,49 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   unlistenMoved?.();
   unlistenBlur?.();
+  if (blurHideTimer) {
+    clearTimeout(blurHideTimer);
+  }
   window.removeEventListener("keydown", handleKeydown);
 });
 </script>
 
 <template>
   <div class="app-shell">
-    <!-- 玻璃主体 -->
     <div class="glass-body">
-      <!-- 标题栏（可拖拽） -->
+      <!-- 标题栏 -->
       <div class="title-bar">
         <div class="drag-region" data-tauri-drag-region>
           <span class="app-title">TimeSense</span>
+          <span class="page-title">{{ route.meta.title ?? "" }}</span>
         </div>
         <div class="window-controls">
           <button class="win-btn collapse" @click.stop="hideMainWindow" title="收起面板">
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-              <path
-                d="M3 5L7 9L11 5"
-                stroke="currentColor"
-                stroke-width="1.8"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
+            <ChevronDown :size="16" :stroke-width="2.2" />
           </button>
         </div>
       </div>
 
-      <!-- 内容区 -->
-      <div class="content-area">
-        <router-view />
+      <!-- 主体 -->
+      <div class="main-layout">
+        <!-- 侧边导航 -->
+        <nav class="sidebar">
+          <div
+            v-for="item in navItems"
+            :key="item.path"
+            class="nav-item"
+            :class="{ active: route.path === item.path }"
+            @click="navigate(item.path)"
+          >
+            <component :is="item.icon" class="nav-icon" :size="20" :stroke-width="1.8" />
+            <span class="nav-label">{{ item.title }}</span>
+          </div>
+        </nav>
+
+        <!-- 内容区 -->
+        <div class="content-area">
+          <router-view />
+        </div>
       </div>
     </div>
   </div>
@@ -157,9 +203,9 @@ onBeforeUnmount(() => {
   flex: 1;
   display: flex;
   align-items: center;
+  gap: 12px;
   padding: 0 16px;
   -webkit-app-region: drag;
-  app-region: drag;
   user-select: none;
 }
 
@@ -170,6 +216,13 @@ onBeforeUnmount(() => {
   letter-spacing: 0.3px;
 }
 
+.page-title {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  padding-left: 10px;
+  border-left: 1px solid var(--border-glass);
+}
+
 .window-controls {
   display: flex;
   align-items: center;
@@ -177,7 +230,6 @@ onBeforeUnmount(() => {
   padding: 0 10px 0 6px;
   flex-shrink: 0;
   -webkit-app-region: no-drag;
-  app-region: no-drag;
   z-index: 5;
 }
 
@@ -201,9 +253,58 @@ onBeforeUnmount(() => {
   color: var(--text-primary);
 }
 
+.main-layout {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+.sidebar {
+  width: 110px;
+  flex-shrink: 0;
+  padding: 12px 8px;
+  border-right: 1px solid var(--border-glass);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.nav-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 6px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  color: var(--text-secondary);
+}
+
+.nav-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+}
+
+.nav-item.active {
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.2), rgba(236, 72, 153, 0.15));
+  color: var(--text-primary);
+  border: 1px solid rgba(139, 92, 246, 0.3);
+}
+
+.nav-icon {
+  font-size: 20px;
+}
+
+.nav-label {
+  font-size: 11px;
+  font-weight: 500;
+}
+
 .content-area {
   flex: 1;
-  overflow: hidden;
+  overflow-y: auto;
   padding: 16px;
 }
 </style>
