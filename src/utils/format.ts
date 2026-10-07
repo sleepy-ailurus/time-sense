@@ -15,3 +15,15 @@ export function formatDuration(seconds: number): string {
   const mins = Math.floor((seconds % 3600) / 60);
   return mins > 0 ? `${hours}h ${mins}m` : `${hours}小时`;
 }
+
+/**
+ * HTML 转义：进程名/窗口标题等外部输入拼进 ECharts tooltip（innerHTML 渲染）前必须转义
+ */
+export function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}

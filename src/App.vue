@@ -2,6 +2,7 @@
 import { onMounted, onBeforeUnmount, computed, markRaw } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { getCurrentWindow, LogicalPosition } from "@tauri-apps/api/window";
+import { invoke } from "@tauri-apps/api/core";
 import { hideMainWindow } from "./api";
 import { LayoutDashboard, PieChart, Filter, Settings, ChevronDown, Activity, BarChart3, Grid3x3 } from "lucide-vue-next";
 import { NConfigProvider, darkTheme } from "naive-ui";
@@ -58,6 +59,16 @@ function handleKeydown(e: KeyboardEvent) {
 onMounted(async () => {
   // 恢复窗口位置
   await restoreWindowPosition();
+
+  // 普通启动：显示主窗口；开机自启（--autostart）：静默驻留托盘
+  try {
+    const shouldShow = await invoke<boolean>("should_show_window_on_start");
+    if (shouldShow) {
+      await win.show();
+    }
+  } catch {
+    // 查询失败时保持隐藏，仍可从托盘唤出
+  }
 
   // 监听窗口移动，保存位置
   try {

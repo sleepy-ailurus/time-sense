@@ -34,7 +34,21 @@ pub fn setup_tray(app: &AppHandle) -> Result<TrayIcon> {
                 show_main_window(&app);
             }
             "toggle_recording" => {
-                let _ = app.emit("tray://toggle_recording", ());
+                if let Some(state) = app.try_state::<AppState>() {
+                    let now_recording = {
+                        let mut recording = state.is_recording.lock();
+                        *recording = !*recording;
+                        *recording
+                    };
+                    if !now_recording {
+                        // 暂停记录：闭合当前活动段，避免恢复后把暂停期间计入旧活动
+                        let mut engine = state.activity_engine.lock();
+                        engine.reset_current();
+                    }
+                    let _ = app.emit("recording://changed", now_recording);
+                    // 刷新菜单，让「暂停记录 / 恢复记录」文本与状态同步
+                    let _ = refresh_tray_stats(app);
+                }
             }
             "pomodoro_start" => {
                 if let Some(state) = app.try_state::<AppState>() {
@@ -96,7 +110,17 @@ fn build_tray_menu(app: &AppHandle<Wry>, top_apps: &[AppStat], pom_status: Optio
     let open_item = MenuItem::with_id(app, "open_main", "打开主面板", true, None::<&str>)?;
     let stats_submenu = build_stats_submenu(app, top_apps)?;
     let pomodoro_submenu = build_pomodoro_submenu(app, pom_status)?;
-    let pause_item = MenuItem::with_id(app, "toggle_recording", "暂停记录", true, None::<&str>)?;
+    let is_recording = app
+        .try_state::<AppState>()
+        .map(|s| *s.is_recording.lock())
+        .unwrap_or(true);
+    let pause_item = MenuItem::with_id(
+        app,
+        "toggle_recording",
+        if is_recording { "暂停记录" } else { "恢复记录" },
+        true,
+        None::<&str>,
+    )?;
     let quit_item = MenuItem::with_id(app, "quit", "退出 TimeSense", true, None::<&str>)?;
 
     let menu = Menu::with_items(app, &[
@@ -209,7 +233,7 @@ fn build_pomodoro_submenu(app: &AppHandle<Wry>, status: Option<&PomodoroStatus>)
 pub fn refresh_tray_stats(app: &AppHandle<Wry>) -> Result<()> {
     let state = app.state::<AppState>();
     let conn = state.db.conn().lock();
-    let stats = ActivityDao::get_today_stats(&conn).unwrap_or_default();
+    let stats = ActivityDao::get_stats_by_date(&conn, None).unwrap_or_default();
     drop(conn);
 
     // 获取番茄钟状态
@@ -318,7 +342,7 @@ pub fn show_main_window(app: &AppHandle<Wry>) {
 }
 
 fn truncate_str(s: &str, max: usize) -> String {
-    if s.len() <= max {
+    if s.chars().count() <= max {
         s.to_string()
     } else {
         let mut result: String = s.chars().take(max.saturating_sub(1)).collect();

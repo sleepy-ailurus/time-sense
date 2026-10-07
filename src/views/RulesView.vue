@@ -120,12 +120,21 @@ async function handleSaveEdit() {
   }
 }
 
-async function handleDelete(id: number) {
+const deletingId = ref<number | null>(null);
+
+function requestDelete(id: number) {
+  deletingId.value = id;
+}
+
+async function confirmDelete() {
+  if (deletingId.value === null) return;
   try {
-    await deleteRule(id);
+    await deleteRule(deletingId.value);
     await loadData();
   } catch (e) {
     console.error("删除规则失败", e);
+  } finally {
+    deletingId.value = null;
   }
 }
 
@@ -200,7 +209,7 @@ onMounted(() => {
           <button class="action-btn toggle" @click="handleToggle(rule.id)">
             {{ rule.enabled ? "停用" : "启用" }}
           </button>
-          <button class="action-btn delete" @click="handleDelete(rule.id)" title="删除">
+          <button class="action-btn delete" @click="requestDelete(rule.id)" title="删除">
             <Trash2 :size="14" :stroke-width="1.8" />
           </button>
         </div>
@@ -311,6 +320,17 @@ onMounted(() => {
         <div class="modal-actions">
           <button class="btn-secondary" @click="showEditModal = false">取消</button>
           <button class="btn-primary" @click="handleSaveEdit">保存</button>
+        </div>
+      </div>
+    </div>
+    <!-- 删除确认弹窗 -->
+    <div v-if="deletingId !== null" class="modal-overlay" @click.self="deletingId = null">
+      <div class="modal-content">
+        <h3 class="modal-title">删除规则</h3>
+        <p class="confirm-text">确定要删除这条规则吗？删除后对应活动将不再按此规则归类。</p>
+        <div class="modal-actions">
+          <button class="btn-secondary" @click="deletingId = null">取消</button>
+          <button class="btn-danger" @click="confirmDelete">删除</button>
         </div>
       </div>
     </div>
@@ -611,5 +631,28 @@ onMounted(() => {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 20px;
+}
+
+.confirm-text {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin: 0;
+}
+
+.btn-danger {
+  padding: 8px 14px;
+  background: linear-gradient(135deg, #ef4444, #dc2626);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-danger:hover {
+  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.4);
 }
 </style>

@@ -35,7 +35,7 @@ pub struct ActivityStateMachine {
 }
 
 /// 每 N 次 tick 更新一次当前活动的 end_time（降低数据库写入频率）
-const FLUSH_INTERVAL_TICKS: u32 = 6; // 6 * 5s = 30 秒
+const FLUSH_INTERVAL_TICKS: u32 = 6; // 6 * 2s = 12 秒
 
 impl ActivityStateMachine {
     pub fn new(db: Arc<Database>) -> Self {
@@ -225,6 +225,16 @@ impl ActivityStateMachine {
     pub fn flush(&mut self) {
         let now = Utc::now().timestamp();
         self.flush_current(now);
+    }
+
+    /// 重置当前活动状态（暂停记录时调用）：flush 后丢弃当前段，
+    /// 恢复记录后从新时刻重新起段，避免把暂停期间计入旧活动
+    pub fn reset_current(&mut self) {
+        let now = Utc::now().timestamp();
+        self.flush_current(now);
+        self.current = None;
+        self.pending_switch = None;
+        self.flush_tick_count = 0;
     }
 
     /// 获取当前正在进行的活动

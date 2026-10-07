@@ -1,4 +1,4 @@
-use tauri::{State, Window, Emitter, AppHandle};
+use tauri::{State, Window, AppHandle, Emitter};
 
 use crate::db::{
     ActivityDao, ActivityLog, AggregatesDao, AppStat, Category, CategoryDao, CategoryStat,
@@ -10,11 +10,11 @@ use crate::tray;
 
 // ==================== 活动相关 ====================
 
-/// 获取今日各应用耗时统计
+/// 获取各应用耗时统计（按耗时倒序）；date 为 None 时查今天
 #[tauri::command]
-pub fn get_today_stats(state: State<AppState>) -> Result<Vec<AppStat>, String> {
+pub fn get_today_stats(state: State<AppState>, date: Option<String>) -> Result<Vec<AppStat>, String> {
     let conn = state.db.conn().lock();
-    ActivityDao::get_today_stats(&conn).map_err(|e| e.to_string())
+    ActivityDao::get_stats_by_date(&conn, date.as_deref()).map_err(|e| e.to_string())
 }
 
 /// 获取今日总时长
@@ -65,16 +65,31 @@ pub fn is_recording(state: State<AppState>) -> bool {
 
 /// 切换记录状态
 #[tauri::command]
-pub fn toggle_recording(state: State<AppState>) -> bool {
-    let mut recording = state.is_recording.lock();
-    *recording = !*recording;
-    *recording
+pub fn toggle_recording(state: State<AppState>, app: AppHandle) -> bool {
+    let now_recording = {
+        let mut recording = state.is_recording.lock();
+        *recording = !*recording;
+        *recording
+    };
+    if !now_recording {
+        // 暂停记录：闭合当前活动段，避免恢复后把暂停期间计入旧活动
+        let mut engine = state.activity_engine.lock();
+        engine.reset_current();
+    }
+    let _ = app.emit("recording://changed", now_recording);
+    now_recording
 }
 
 /// 隐藏主窗口（收起面板）
 #[tauri::command]
 pub fn hide_main_window(window: Window) -> Result<(), String> {
     window.hide().map_err(|e| e.to_string())
+}
+
+/// 是否应在启动时显示主窗口（普通启动=true，开机自启静默驻留托盘=false）
+#[tauri::command]
+pub fn should_show_window_on_start(state: State<AppState>) -> bool {
+    !state.started_with_autostart
 }
 
 /// 获取应用版本号
@@ -105,11 +120,11 @@ pub fn get_categories(state: State<AppState>) -> Result<Vec<Category>, String> {
     CategoryDao::list_all(&conn).map_err(|e| e.to_string())
 }
 
-/// 获取今日分类统计
+/// 获取分类统计（按耗时倒序）；date 为 None 时查今天
 #[tauri::command]
-pub fn get_today_category_stats(state: State<AppState>) -> Result<Vec<CategoryStat>, String> {
+pub fn get_today_category_stats(state: State<AppState>, date: Option<String>) -> Result<Vec<CategoryStat>, String> {
     let conn = state.db.conn().lock();
-    CategoryDao::get_today_category_stats(&conn).map_err(|e| e.to_string())
+    CategoryDao::get_category_stats_by_date(&conn, date.as_deref()).map_err(|e| e.to_string())
 }
 
 /// 新增分类
@@ -278,10 +293,11 @@ fn apply_autostart(_app: &AppHandle, enable: bool) -> Result<(), String> {
         // 获取当前 exe 路径
         let exe_path = std::env::current_exe()
             .map_err(|e| format!("获取 exe 路径失败: {}", e))?;
-        let exe_str = exe_path.to_string_lossy().to_string();
-        tracing::info!("Writing autostart registry value: {} -> {}", app_name, exe_str);
+        // 带 --autostart 参数：开机自启时静默驻留托盘，不弹窗口
+        let cmd = format!("\"{}\" --autostart", exe_path.to_string_lossy());
+        tracing::info!("Writing autostart registry value: {} -> {}", app_name, cmd);
         run_key
-            .set_value(app_name, &exe_str)
+            .set_value(app_name, &cmd)
             .map_err(|e| format!("写入注册表失败: {}", e))?;
         tracing::info!("Autostart registry value written successfully");
     } else {

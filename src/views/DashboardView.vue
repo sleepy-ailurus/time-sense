@@ -145,12 +145,11 @@ function updateActivityBaseline() {
 }
 
 // 当前活动实时时长（以基准为锚点，本地累加）
+// 空闲段在后端同样是持续增长的记录段，因此空闲时也要继续累加，
+// 否则「空闲中」的时长会冻结在进入空闲瞬间的值
 const currentDurationLive = computed(() => {
   const act = currentActivity.value;
   if (!act) return 0;
-  if (act.isIdle) {
-    return activityBaselineDuration;
-  }
   const elapsedLocal = Math.floor((tickNow.value - activityBaselineAt) / 1000);
   return activityBaselineDuration + elapsedLocal;
 });
@@ -282,25 +281,36 @@ async function handleRefresh() {
   }
 }
 
-async function handleStartPomodoro() {
-  pomodoroStatus.value = await startPomodoroFocus();
+async function runPomodoroAction(action: () => Promise<PomodoroStatus>) {
+  try {
+    pomodoroStatus.value = await action();
+  } catch (e) {
+    console.error("番茄钟操作失败", e);
+  }
 }
 
-async function handlePausePomodoro() {
-  pomodoroStatus.value = await pausePomodoro();
+function handleStartPomodoro() {
+  return runPomodoroAction(startPomodoroFocus);
 }
 
-async function handleResumePomodoro() {
-  pomodoroStatus.value = await resumePomodoro();
+function handlePausePomodoro() {
+  return runPomodoroAction(pausePomodoro);
 }
 
-async function handleStopPomodoro() {
-  pomodoroStatus.value = await stopPomodoro();
+function handleResumePomodoro() {
+  return runPomodoroAction(resumePomodoro);
 }
 
-async function handleSkipPomodoro() {
-  pomodoroStatus.value = await skipPomodoro();
+function handleStopPomodoro() {
+  return runPomodoroAction(stopPomodoro);
 }
+
+function handleSkipPomodoro() {
+  return runPomodoroAction(skipPomodoro);
+}
+
+let unlistenPomodoro: (() => void) | null = null;
+let pomodoroListenDisposed = false;
 
 onMounted(() => {
   fetchTodayStats();
@@ -330,10 +340,19 @@ onMounted(() => {
     if (event.payload) {
       pomodoroStatus.value = event.payload;
     }
+  }).then((unlisten) => {
+    // 组件已卸载时立即注销，防止监听器泄漏
+    if (pomodoroListenDisposed) {
+      unlisten();
+    } else {
+      unlistenPomodoro = unlisten;
+    }
   });
 });
 
 onUnmounted(() => {
+  pomodoroListenDisposed = true;
+  unlistenPomodoro?.();
   if (refreshTimer.value) {
     clearInterval(refreshTimer.value);
   }

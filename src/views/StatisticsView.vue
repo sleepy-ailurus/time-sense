@@ -36,6 +36,7 @@ import { NDatePicker } from 'naive-ui'
 import { format } from 'date-fns'
 import { invoke } from '@tauri-apps/api/core'
 import * as echarts from 'echarts'
+import { escapeHtml } from '../utils/format'
 import type { AppStat, CategoryStat, DailySummary, HourlyStat } from '../api/types'
 import './timeline.css'
 
@@ -129,7 +130,7 @@ function renderAppPieChart() {
       },
       formatter: (params: any) => {
         const pct = params.percent != null ? params.percent.toFixed(1) : '0'
-        return `<div style="font-weight: 600; margin-bottom: 4px;">${params.name}</div>
+        return `<div style="font-weight: 600; margin-bottom: 4px;">${escapeHtml(params.name)}</div>
                 <div>时长：${formatDuration(params.value)}</div>
                 <div>占比：${pct}%</div>`
       },
@@ -249,7 +250,7 @@ function renderCategoryPieChart() {
       },
       formatter: (params: any) => {
         const pct = params.percent != null ? params.percent.toFixed(1) : '0'
-        return `<div style="font-weight: 600; margin-bottom: 4px;">${params.name}</div>
+        return `<div style="font-weight: 600; margin-bottom: 4px;">${escapeHtml(params.name)}</div>
                 <div>时长：${formatDuration(params.value)}</div>
                 <div>占比：${pct}%</div>`
       },
@@ -616,9 +617,10 @@ function handleResize() {
 
 async function loadData() {
   try {
+    const dateStr = format(selectedDate.value, 'yyyy-MM-dd')
     const [apps, cats, trend, hourly] = await Promise.all([
-      invoke<AppStat[]>('get_today_stats'),
-      invoke<CategoryStat[]>('get_today_category_stats'),
+      invoke<AppStat[]>('get_today_stats', { date: dateStr }),
+      invoke<CategoryStat[]>('get_today_category_stats', { date: dateStr }),
       invoke<DailySummary[]>('get_weekly_trend'),
       invoke<HourlyStat[]>('get_hourly_distribution'), // 不传 date，查过去 7 天
     ])

@@ -20,6 +20,7 @@ import { NDatePicker } from 'naive-ui'
 import { format } from 'date-fns'
 import { invoke } from '@tauri-apps/api/core'
 import * as echarts from 'echarts'
+import { escapeHtml } from '../utils/format'
 import type { ActivityLog } from '../api/types'
 import './timeline.css'
 
@@ -130,10 +131,10 @@ function renderChart() {
           <div style="padding: 4px 0;">
             <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
               <span style="display: inline-block; width: 10px; height: 10px; border-radius: 2px; background: ${catInfo.color};"></span>
-              <span style="font-weight: 600; color: #fff;">${activity.processName}</span>
+              <span style="font-weight: 600; color: #fff;">${escapeHtml(activity.processName)}</span>
               <span style="color: #9ca3af; font-size: 11px;">[${catInfo.name}]</span>
             </div>
-            ${activity.windowTitle ? `<div style="color: #9ca3af; margin-bottom: 6px; font-size: 11px; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${activity.windowTitle}</div>` : ''}
+            ${activity.windowTitle ? `<div style="color: #9ca3af; margin-bottom: 6px; font-size: 11px; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(activity.windowTitle)}</div>` : ''}
             <div style="color: #d1d5db; font-size: 12px; line-height: 1.6;">
               <div>开始：${formatTime(activity.startTime)}</div>
               <div>结束：${formatTime(activity.endTime)}</div>

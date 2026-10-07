@@ -1,5 +1,4 @@
 use anyhow::Result;
-use chrono::{Datelike, Local, TimeZone};
 use rusqlite::{params, Connection};
 
 use super::models::{Category, CategoryStat};
@@ -104,39 +103,39 @@ impl CategoryDao {
         Ok(())
     }
 
-    /// 获取今日分类统计（按耗时倒序）
-    pub fn get_today_category_stats(conn: &Connection) -> Result<Vec<CategoryStat>> {
-        let now = chrono::Local::now();
-        let today_start = chrono::Local
-            .with_ymd_and_hms(now.year(), now.month(), now.day(), 0, 0, 0)
-            .unwrap()
-            .timestamp();
+    /// 获取分类统计（按耗时倒序）
+    /// date 为 None 时查今天，Some 时查指定日期（YYYY-MM-DD）
+    pub fn get_category_stats_by_date(conn: &Connection, date: Option<&str>) -> Result<Vec<CategoryStat>> {
+        let (start_ts, end_ts) = match date {
+            Some(d) => super::activity_dao::date_timestamp_range(d)?,
+            None => super::activity_dao::today_timestamp_range(),
+        };
 
         // 总活跃时长
         let total_active: i64 = conn.query_row(
-            "SELECT COALESCE(SUM(duration), 0) 
-             FROM activity_logs 
-             WHERE start_time >= ?1 AND is_idle = 0",
-            params![today_start],
+            "SELECT COALESCE(SUM(duration), 0)
+             FROM activity_logs
+             WHERE start_time >= ?1 AND start_time < ?2 AND is_idle = 0",
+            params![start_ts, end_ts],
             |row| row.get(0),
         )?;
 
         // 按分类聚合
         let mut stmt = conn.prepare(
-            "SELECT 
-                COALESCE(c.id, 0) as cat_id,
-                COALESCE(c.name, '未分类') as cat_name,
+            "SELECT
+                CASE WHEN c.id IS NULL THEN (SELECT id FROM categories WHERE name = '其他') ELSE c.id END as cat_id,
+                COALESCE(c.name, '其他') as cat_name,
                 COALESCE(c.color, '#6B7280') as cat_color,
-                c.icon as cat_icon,
+                CASE WHEN c.icon IS NULL THEN 'MoreHorizontal' ELSE c.icon END as cat_icon,
                 COALESCE(SUM(al.duration), 0) as total
              FROM activity_logs al
              LEFT JOIN categories c ON al.category_id = c.id
-             WHERE al.start_time >= ?1 AND al.is_idle = 0
+             WHERE al.start_time >= ?1 AND al.start_time < ?2 AND al.is_idle = 0
              GROUP BY cat_id
              ORDER BY total DESC",
         )?;
 
-        let rows = stmt.query_map(params![today_start], |row| {
+        let rows = stmt.query_map(params![start_ts, end_ts], |row| {
             let total_seconds: i64 = row.get(4)?;
             let percentage = if total_active > 0 {
                 (total_seconds as f64 / total_active as f64) * 100.0

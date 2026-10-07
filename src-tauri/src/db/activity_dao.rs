@@ -35,16 +35,20 @@ impl ActivityDao {
         Ok(())
     }
 
-    /// 获取今日的应用统计（按耗时倒序，带分类信息）
-    pub fn get_today_stats(conn: &Connection) -> Result<Vec<AppStat>> {
-        let (start_of_day, _) = today_timestamp_range();
+    /// 获取应用统计（按耗时倒序，带分类信息）
+    /// date 为 None 时查今天，Some 时查指定日期（YYYY-MM-DD）
+    pub fn get_stats_by_date(conn: &Connection, date: Option<&str>) -> Result<Vec<AppStat>> {
+        let (start_ts, end_ts) = match date {
+            Some(d) => date_timestamp_range(d)?,
+            None => today_timestamp_range(),
+        };
 
         // 先计算总活跃时长
         let total_active: i64 = conn.query_row(
-            "SELECT COALESCE(SUM(duration), 0) 
-             FROM activity_logs 
-             WHERE start_time >= ?1 AND is_idle = 0",
-            params![start_of_day],
+            "SELECT COALESCE(SUM(duration), 0)
+             FROM activity_logs
+             WHERE start_time >= ?1 AND start_time < ?2 AND is_idle = 0",
+            params![start_ts, end_ts],
             |row| row.get(0),
         )?;
 
@@ -54,12 +58,12 @@ impl ActivityDao {
                     c.id, c.name, c.color
              FROM activity_logs al
              LEFT JOIN categories c ON al.category_id = c.id
-             WHERE al.start_time >= ?1 AND al.is_idle = 0
+             WHERE al.start_time >= ?1 AND al.start_time < ?2 AND al.is_idle = 0
              GROUP BY al.process_name
              ORDER BY total DESC",
         )?;
 
-        let rows = stmt.query_map(params![start_of_day], |row| {
+        let rows = stmt.query_map(params![start_ts, end_ts], |row| {
             let process_name: String = row.get(0)?;
             let total_seconds: i64 = row.get(1)?;
             let percentage = if total_active > 0 {
@@ -181,7 +185,7 @@ impl ActivityDao {
 }
 
 /// 获取今日 00:00 和明日 00:00 的 Unix 时间戳（秒）
-fn today_timestamp_range() -> (i64, i64) {
+pub(super) fn today_timestamp_range() -> (i64, i64) {
     let now = Local::now();
     let today_start = Local
         .with_ymd_and_hms(now.year(), now.month(), now.day(), 0, 0, 0)
@@ -192,7 +196,7 @@ fn today_timestamp_range() -> (i64, i64) {
 }
 
 /// 解析 YYYY-MM-DD 日期字符串，返回当天起止时间戳（秒）
-fn date_timestamp_range(date_str: &str) -> Result<(i64, i64)> {
+pub(super) fn date_timestamp_range(date_str: &str) -> Result<(i64, i64)> {
     let parts: Vec<&str> = date_str.split('-').collect();
     if parts.len() != 3 {
         anyhow::bail!("Invalid date format, expected YYYY-MM-DD: {}", date_str);

@@ -7,7 +7,7 @@ pub mod tray_icon;
 
 use std::sync::Arc;
 use parking_lot::{Mutex, RwLock};
-use tauri::{Manager, Emitter};
+use tauri::Manager;
 
 use db::{Database, GeneralSettings, SettingsDao};
 use engine::activity_state::ActivityStateMachine;
@@ -20,6 +20,8 @@ pub struct AppState {
     pub pomodoro: Arc<PomodoroEngine>,
     pub is_recording: Arc<Mutex<bool>>,
     pub general_settings: Arc<RwLock<GeneralSettings>>,
+    /// 本次是否由开机自启拉起（启动参数含 --autostart）
+    pub started_with_autostart: bool,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -38,12 +40,21 @@ pub fn run() {
     tauri::Builder::default()
         // 单实例：再次启动（任务栏 Jump List、双击 exe、快捷方式等）不会开第二个进程，
         // 而是把已经在跑的窗口显示出来。必须放在其它插件之前注册。
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            // 开机自启触发的重复拉起：保持静默驻留托盘，不弹窗
+            if args.iter().any(|a| a == "--autostart") {
+                tracing::info!("Autostart duplicate launch -> keep hidden");
+                return;
+            }
             tracing::info!("Another instance was launched -> focus existing window");
             tray::show_main_window(app);
         }))
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
+            // 是否由开机自启拉起：开机自启的注册表命令带 --autostart 参数，
+            // 此时保持窗口隐藏静默驻留托盘；普通启动由前端恢复位置后显示窗口
+            let started_with_autostart = std::env::args().any(|a| a == "--autostart");
+
             // 初始化数据库
             let db = Arc::new(Database::new(&app.handle())?);
             db.init()?;
@@ -69,6 +80,7 @@ pub fn run() {
                 pomodoro: pomodoro.clone(),
                 is_recording: is_recording.clone(),
                 general_settings: general_settings.clone(),
+                started_with_autostart,
             });
 
             // 设置托盘
@@ -107,6 +119,7 @@ pub fn run() {
             commands::is_recording,
             commands::toggle_recording,
             commands::hide_main_window,
+            commands::should_show_window_on_start,
             commands::get_app_version,
             commands::open_url,
             commands::get_activity_by_date,

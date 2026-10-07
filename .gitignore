@@ -19,6 +19,7 @@ src-tauri/bundle/
 src-tauri/sidecar/
 src-tauri/icons/icon.*
 !src-tauri/icons/icon.png
+!src-tauri/icons/icon.ico
 !src-tauri/icons/tray-icon.png
 
 # ---- Build outputs ----
@@ -81,6 +82,9 @@ data.db
 data.db-wal
 data.db-shm
 
+# ---- WorkBuddy (AI assistant workspace data) ----
+.workbuddy/
+
 # ---- Design files ----
 design/
 *.sketch
@@ -88,3 +92,6 @@ design/
 
 # ---- Project docs (internal) ----
 开发文档.md
+
+# ---- Release installers (generated) ----
+setup/

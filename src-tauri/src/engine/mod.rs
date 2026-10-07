@@ -16,7 +16,7 @@ use pomodoro::PomodoroEngine;
 const MONITOR_INTERVAL_SECS: u64 = 2;
 
 /// 番茄钟心跳间隔（毫秒）——到点/阶段切换要精确落在目标时刻，
-/// 所以用独立的高频心跳，而不是等 5 秒的监控循环
+/// 所以用独立的高频心跳，而不是等 2 秒的监控循环
 const POMODORO_TICK_MS: u64 = 250;
 
 /// 防抖阈值（秒）— 小于此时间的窗口切换忽略

@@ -97,7 +97,6 @@ export interface NewAppRule {
 export interface DailySummary {
   date: string
   totalSeconds: number
-  activeSeconds: number
   idleSeconds: number
   workSeconds: number
   studySeconds: number
