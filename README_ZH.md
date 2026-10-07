@@ -15,6 +15,7 @@
 </p>
 
 <p align="center">
+  <img alt="license" src="https://img.shields.io/badge/license-MIT-green" />
   <img alt="release" src="https://img.shields.io/badge/release-v0.1.0-blue" />
   <img alt="platform" src="https://img.shields.io/badge/platform-Windows%2010%2F11-blue" />
   <img alt="tauri" src="https://img.shields.io/badge/Tauri-2.x-orange" />
@@ -85,4 +86,4 @@ docs/         # 文档资源
 
 ## 开源协议
 
-待定
+[MIT](LICENSE) © 2026 sleepy-ailurus
