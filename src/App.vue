@@ -3,18 +3,20 @@ import { onMounted, onBeforeUnmount, computed, markRaw } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { getCurrentWindow, LogicalPosition } from "@tauri-apps/api/window";
 import { hideMainWindow } from "./api";
-import { LayoutDashboard, PieChart, Filter, Settings, ChevronDown } from "lucide-vue-next";
+import { LayoutDashboard, PieChart, Filter, Settings, ChevronDown, Activity, BarChart3, Grid3x3 } from "lucide-vue-next";
+import { NConfigProvider, darkTheme } from "naive-ui";
 
 const route = useRoute();
 const router = useRouter();
 const win = getCurrentWindow();
 let unlistenMoved: (() => void) | null = null;
-let unlistenBlur: (() => void) | null = null;
-let blurHideTimer: ReturnType<typeof setTimeout> | null = null;
 
 const navItems = computed(() => [
   { path: "/", title: "概览", icon: markRaw(LayoutDashboard) },
   { path: "/categories", title: "分类统计", icon: markRaw(PieChart) },
+  { path: "/timeline", title: "时间轴", icon: markRaw(Activity) },
+  { path: "/statistics", title: "统计", icon: markRaw(BarChart3) },
+  { path: "/heatmap", title: "热力图", icon: markRaw(Grid3x3) },
   { path: "/rules", title: "规则管理", icon: markRaw(Filter) },
   { path: "/settings", title: "设置", icon: markRaw(Settings) },
 ]);
@@ -66,34 +68,10 @@ onMounted(async () => {
     // 监听移动事件失败，不影响主功能
   }
 
-  // 失去焦点自动隐藏
-  try {
-    unlistenBlur = await win.onFocusChanged(async ({ payload: focused }) => {
-      if (focused) {
-        // 重新获得焦点：清除待执行的隐藏定时器
-        if (blurHideTimer) {
-          clearTimeout(blurHideTimer);
-          blurHideTimer = null;
-        }
-      } else {
-        // 失去焦点：延迟 150ms 后检查，避免短暂失焦就隐藏
-        blurHideTimer = setTimeout(async () => {
-          try {
-            const stillFocused = await win.isFocused();
-            if (!stillFocused) {
-              hideMainWindow();
-            }
-          } catch {
-            // 忽略查询焦点状态失败
-          } finally {
-            blurHideTimer = null;
-          }
-        }, 150);
-      }
-    });
-  } catch {
-    // 监听焦点事件失败，不影响主功能
-  }
+  // 注意：这里**不做**「失去焦点自动隐藏」。
+  // 任务栏点击/右键会让窗口短暂失焦，一旦失焦就 hide()，
+  // 任务栏上的程序图标会跟着消失（窗口既看不见、也无法从任务栏唤回）。
+  // 现在只保留显式关闭入口：Esc、标题栏「收起面板」、托盘图标/菜单、Alt+F4（关闭即收进托盘）。
 
   // Esc 键监听
   window.addEventListener("keydown", handleKeydown);
@@ -101,10 +79,6 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   unlistenMoved?.();
-  unlistenBlur?.();
-  if (blurHideTimer) {
-    clearTimeout(blurHideTimer);
-  }
   window.removeEventListener("keydown", handleKeydown);
 });
 </script>
@@ -143,7 +117,9 @@ onBeforeUnmount(() => {
 
         <!-- 内容区 -->
         <div class="content-area">
-          <router-view />
+          <n-config-provider :theme="darkTheme">
+            <router-view />
+          </n-config-provider>
         </div>
       </div>
     </div>

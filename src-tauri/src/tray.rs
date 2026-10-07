@@ -255,22 +255,30 @@ pub fn on_pomodoro_phase_change(app: &AppHandle<Wry>, status: &PomodoroStatus) -
 
     // 只有真正的阶段切换才发系统通知（暂停/继续不算）
     if status.is_phase_transition {
-        if let Some(typ) = status.session_type.as_deref() {
-            let (title, body) = match typ {
-                "focus" => ("开始专注", "专注模式已启动，加油！"),
-                "short_break" => ("休息一下", "专注结束，起来活动活动吧 🌿"),
-                "long_break" => ("长休息", "辛苦了，好好休息一下 ☕"),
-                _ => ("", ""),
-            };
+        // 检查是否启用了系统通知
+        let notification_enabled = app
+            .try_state::<AppState>()
+            .map(|s| s.general_settings.read().notification_enabled)
+            .unwrap_or(true);
 
-            if !title.is_empty() {
-                use tauri_plugin_notification::NotificationExt;
-                let _ = app
-                    .notification()
-                    .builder()
-                    .title(title)
-                    .body(body)
-                    .show();
+        if notification_enabled {
+            if let Some(typ) = status.session_type.as_deref() {
+                let (title, body) = match typ {
+                    "focus" => ("开始专注", "专注模式已启动，加油！"),
+                    "short_break" => ("休息一下", "专注结束，起来活动活动吧 🌿"),
+                    "long_break" => ("长休息", "辛苦了，好好休息一下 ☕"),
+                    _ => ("", ""),
+                };
+
+                if !title.is_empty() {
+                    use tauri_plugin_notification::NotificationExt;
+                    let _ = app
+                        .notification()
+                        .builder()
+                        .title(title)
+                        .body(body)
+                        .show();
+                }
             }
         }
     }
@@ -286,17 +294,25 @@ pub fn on_pomodoro_phase_change(app: &AppHandle<Wry>, status: &PomodoroStatus) -
 
 fn toggle_main_window(app: &AppHandle<Wry>) {
     if let Some(win) = app.get_webview_window("main") {
-        if win.is_visible().unwrap_or(false) {
+        let visible = win.is_visible().unwrap_or(false);
+        let minimized = win.is_minimized().unwrap_or(false);
+        if visible && !minimized {
+            // 窗口正常显示中 → 隐藏
             let _ = win.hide();
         } else {
+            // 窗口隐藏或最小化 → 显示并激活
             show_main_window(app);
         }
     }
 }
 
-fn show_main_window(app: &AppHandle<Wry>) {
+pub fn show_main_window(app: &AppHandle<Wry>) {
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.show();
+        // 如果是最小化状态，先恢复
+        if win.is_minimized().unwrap_or(false) {
+            let _ = win.unminimize();
+        }
         let _ = win.set_focus();
     }
 }

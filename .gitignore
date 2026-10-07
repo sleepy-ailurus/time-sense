@@ -85,3 +85,6 @@ data.db-shm
 design/
 *.sketch
 *.fig
+
+# ---- Project docs (internal) ----
+开发文档.md

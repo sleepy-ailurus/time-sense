@@ -89,6 +89,44 @@ export interface NewAppRule {
   matchMode: MatchMode;
 }
 
+// ==================== 统计 ====================
+
+/**
+ * 每日汇总
+ */
+export interface DailySummary {
+  date: string
+  totalSeconds: number
+  activeSeconds: number
+  idleSeconds: number
+  workSeconds: number
+  studySeconds: number
+  entertainmentSeconds: number
+  socialSeconds: number
+  otherSeconds: number
+  pomodoroCount: number
+  pomodoroSeconds: number
+}
+
+/**
+ * 热力图单日数据
+ */
+export interface HeatmapDay {
+  date: string
+  totalSeconds: number
+  pomodoroCount: number
+}
+
+/**
+ * 时段分布统计
+ */
+export interface HourlyStat {
+  hour: number
+  totalSeconds: number
+  weekday: number  // 0=周一, 6=周日
+  date: string
+}
+
 // ==================== 番茄钟 ====================
 
 export type PomodoroSessionType = "focus" | "short_break" | "long_break";
@@ -120,4 +158,10 @@ export interface PomodoroSettings {
   autoStartFocus: boolean;
   autoMode: boolean;
   enabled: boolean;
+}
+
+export interface GeneralSettings {
+  autoStart: boolean;
+  notificationEnabled: boolean;
+  idleThresholdMinutes: number;
 }

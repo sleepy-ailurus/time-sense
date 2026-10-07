@@ -169,3 +169,59 @@ impl Default for PomodoroSettings {
         }
     }
 }
+
+/// 常规设置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneralSettings {
+    pub auto_start: bool,         // 开机自启
+    pub notification_enabled: bool, // 系统通知
+    pub idle_threshold_minutes: i32, // 闲置检测阈值（分钟）
+}
+
+impl Default for GeneralSettings {
+    fn default() -> Self {
+        Self {
+            auto_start: false,
+            notification_enabled: true,
+            idle_threshold_minutes: 3,
+        }
+    }
+}
+
+// ---------- 数据统计与聚合 ----------
+
+/// 每日汇总
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DailySummary {
+    pub date: String,              // YYYY-MM-DD
+    pub total_seconds: i64,        // 活跃总时长（不含空闲）
+    pub idle_seconds: i64,         // 空闲总时长
+    pub work_seconds: i64,         // 工作类时长
+    pub study_seconds: i64,        // 学习类时长
+    pub entertainment_seconds: i64,// 娱乐类时长
+    pub social_seconds: i64,       // 社交类时长
+    pub other_seconds: i64,        // 其他类时长
+    pub pomodoro_count: i32,       // 完成番茄钟数
+    pub pomodoro_seconds: i64,     // 番茄钟专注总时长
+}
+
+/// 热力图单天数据
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeatmapDay {
+    pub date: String,         // YYYY-MM-DD
+    pub total_seconds: i64,   // 专注总时长（工作+学习）
+    pub pomodoro_count: i32,  // 完成番茄钟数
+}
+
+/// 时段统计（小时维度）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HourlyStat {
+    pub hour: i32,            // 0-23
+    pub total_seconds: i64,   // 该小时总活跃时长
+    pub weekday: i32,         // 0-6 (0=周一, 6=周日)，用于7天热力分布
+    pub date: String,         // YYYY-MM-DD
+}

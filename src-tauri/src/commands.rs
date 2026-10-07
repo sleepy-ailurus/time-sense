@@ -1,8 +1,9 @@
 use tauri::{State, Window, Emitter, AppHandle};
 
 use crate::db::{
-    ActivityDao, ActivityLog, AppStat, Category, CategoryDao, CategoryStat,
-    CurrentActivity, NewAppRule, PomodoroSettings, PomodoroStatus, RuleDao, TodayTotal,
+    ActivityDao, ActivityLog, AggregatesDao, AppStat, Category, CategoryDao, CategoryStat,
+    CurrentActivity, DailySummary, GeneralSettings, HeatmapDay, HourlyStat, NewAppRule,
+    PomodoroSettings, PomodoroStatus, RuleDao, SettingsDao, TodayTotal,
 };
 use crate::AppState;
 use crate::tray;
@@ -74,6 +75,18 @@ pub fn toggle_recording(state: State<AppState>) -> bool {
 #[tauri::command]
 pub fn hide_main_window(window: Window) -> Result<(), String> {
     window.hide().map_err(|e| e.to_string())
+}
+
+/// 获取应用版本号
+#[tauri::command]
+pub fn get_app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
+/// 在默认浏览器中打开 URL
+#[tauri::command]
+pub fn open_url(url: String) -> Result<(), String> {
+    webbrowser::open(&url).map_err(|e| e.to_string())
 }
 
 /// 获取指定日期的所有活动记录
@@ -210,6 +223,86 @@ pub fn update_pomodoro_settings(state: State<AppState>, settings: PomodoroSettin
     Ok(())
 }
 
+/// 获取常规设置
+#[tauri::command]
+pub fn get_general_settings(state: State<AppState>) -> GeneralSettings {
+    state.general_settings.read().clone()
+}
+
+/// 更新常规设置
+#[tauri::command]
+pub fn update_general_settings(
+    state: State<AppState>,
+    app: AppHandle,
+    settings: GeneralSettings,
+) -> Result<(), String> {
+    tracing::info!("update_general_settings called: auto_start={}, notification_enabled={}, idle_threshold_minutes={}",
+        settings.auto_start, settings.notification_enabled, settings.idle_threshold_minutes);
+
+    // 更新内存 + 持久化
+    {
+        let mut gs = state.general_settings.write();
+        *gs = settings.clone();
+        let conn = state.db.conn().lock();
+        SettingsDao::save_general(&conn, &settings).map_err(|e| {
+            tracing::error!("Failed to save general settings: {}", e);
+            e.to_string()
+        })?;
+    }
+
+    // 应用开机自启设置
+    if let Err(e) = apply_autostart(&app, settings.auto_start) {
+        tracing::error!("Failed to apply autostart: {}", e);
+        return Err(e);
+    }
+
+    Ok(())
+}
+
+/// 应用开机自启设置（Windows 注册表方式）
+#[cfg(target_os = "windows")]
+fn apply_autostart(_app: &AppHandle, enable: bool) -> Result<(), String> {
+    use winreg::enums::*;
+    use winreg::RegKey;
+
+    tracing::info!("apply_autostart: enable={}", enable);
+
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let run_key = hkcu
+        .open_subkey_with_flags("Software\\Microsoft\\Windows\\CurrentVersion\\Run", KEY_ALL_ACCESS)
+        .map_err(|e| format!("打开注册表失败: {}", e))?;
+
+    let app_name = "TimeSense";
+
+    if enable {
+        // 获取当前 exe 路径
+        let exe_path = std::env::current_exe()
+            .map_err(|e| format!("获取 exe 路径失败: {}", e))?;
+        let exe_str = exe_path.to_string_lossy().to_string();
+        tracing::info!("Writing autostart registry value: {} -> {}", app_name, exe_str);
+        run_key
+            .set_value(app_name, &exe_str)
+            .map_err(|e| format!("写入注册表失败: {}", e))?;
+        tracing::info!("Autostart registry value written successfully");
+    } else {
+        tracing::info!("Removing autostart registry value: {}", app_name);
+        match run_key.delete_value(app_name) {
+            Ok(_) => tracing::info!("Autostart registry value removed successfully"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                tracing::info!("Autostart registry value not found (already removed)");
+            }
+            Err(e) => return Err(format!("删除注册表失败: {}", e)),
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn apply_autostart(_app: &AppHandle, _enable: bool) -> Result<(), String> {
+    Ok(())
+}
+
 /// 开始专注
 #[tauri::command]
 pub fn start_pomodoro_focus(state: State<AppState>, app: AppHandle) -> PomodoroStatus {
@@ -266,4 +359,34 @@ pub fn skip_pomodoro(state: State<AppState>, app: AppHandle) -> PomodoroStatus {
     let status = state.pomodoro.skip();
     let _ = tray::on_pomodoro_phase_change(&app, &status);
     status
+}
+
+// ==================== 数据统计与聚合 ====================
+
+/// 获取指定日期的汇总数据
+#[tauri::command]
+pub fn get_daily_summary(state: State<AppState>, date: String) -> Result<DailySummary, String> {
+    let conn = state.db.conn().lock();
+    AggregatesDao::get_daily_summary(&conn, &date).map_err(|e| e.to_string())
+}
+
+/// 获取过去7天趋势
+#[tauri::command]
+pub fn get_weekly_trend(state: State<AppState>) -> Result<Vec<DailySummary>, String> {
+    let conn = state.db.conn().lock();
+    AggregatesDao::get_weekly_trend(&conn).map_err(|e| e.to_string())
+}
+
+/// 获取年度热力图数据
+#[tauri::command]
+pub fn get_heatmap_data(state: State<AppState>, year: i32) -> Result<Vec<HeatmapDay>, String> {
+    let conn = state.db.conn().lock();
+    AggregatesDao::get_heatmap_data(&conn, year).map_err(|e| e.to_string())
+}
+
+/// 获取时段分布数据
+#[tauri::command]
+pub fn get_hourly_distribution(state: State<AppState>, date: Option<String>) -> Result<Vec<HourlyStat>, String> {
+    let conn = state.db.conn().lock();
+    AggregatesDao::get_hourly_distribution(&conn, date.as_deref()).map_err(|e| e.to_string())
 }

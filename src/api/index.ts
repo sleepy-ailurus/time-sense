@@ -6,6 +6,7 @@ import type {
   Category,
   CategoryStat,
   CurrentActivity,
+  GeneralSettings,
   NewAppRule,
   PomodoroSettings,
   PomodoroStatus,
@@ -176,6 +177,21 @@ export function getPomodoroSettings(): Promise<PomodoroSettings> {
 /** 更新番茄钟设置 */
 export function updatePomodoroSettings(settings: PomodoroSettings): Promise<void> {
   return call<void>("update_pomodoro_settings", { settings });
+}
+
+/** 获取常规设置 */
+export function getGeneralSettings(): Promise<GeneralSettings> {
+  return call<GeneralSettings>("get_general_settings");
+}
+
+/** 更新常规设置 */
+export function updateGeneralSettings(settings: GeneralSettings): Promise<void> {
+  return call<void>("update_general_settings", { settings });
+}
+
+/** 获取应用版本号 */
+export function getAppVersion(): Promise<string> {
+  return call<string>("get_app_version");
 }
 
 /** 开始专注 */

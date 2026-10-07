@@ -1,14 +1,14 @@
-﻿pub mod activity_state;
+pub mod activity_state;
 pub mod pomodoro;
 
 use std::sync::Arc;
 use std::time::Duration;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use tauri::AppHandle;
 
 use crate::monitor;
 use crate::tray;
-use crate::db::{CategoryDao, Database};
+use crate::db::{CategoryDao, Database, GeneralSettings};
 use activity_state::ActivityStateMachine;
 use pomodoro::PomodoroEngine;
 
@@ -18,9 +18,6 @@ const MONITOR_INTERVAL_SECS: u64 = 2;
 /// 番茄钟心跳间隔（毫秒）——到点/阶段切换要精确落在目标时刻，
 /// 所以用独立的高频心跳，而不是等 5 秒的监控循环
 const POMODORO_TICK_MS: u64 = 250;
-
-/// 空闲阈值（秒）— 超过此值判定为空闲
-const IDLE_THRESHOLD_SECS: u64 = 300; // 5 分钟
 
 /// 防抖阈值（秒）— 小于此时间的窗口切换忽略
 const DEBOUNCE_SECS: i64 = 3;
@@ -57,6 +54,7 @@ pub async fn start_monitor_loop(
     pomodoro: Arc<PomodoroEngine>,
     is_recording: Arc<Mutex<bool>>,
     db: Arc<Database>,
+    general_settings: Arc<RwLock<GeneralSettings>>,
 ) {
     let monitor = monitor::create_monitor();
     let mut interval = tokio::time::interval(Duration::from_secs(MONITOR_INTERVAL_SECS));
@@ -115,7 +113,12 @@ pub async fn start_monitor_loop(
             }
         };
 
-        let is_idle = idle_time.as_secs() >= IDLE_THRESHOLD_SECS;
+        // 从设置读取闲置阈值（分钟转秒）
+        let idle_threshold_secs = {
+            let gs = general_settings.read();
+            (gs.idle_threshold_minutes as u64).saturating_mul(60)
+        };
+        let is_idle = idle_time.as_secs() >= idle_threshold_secs.max(60); // 最少 1 分钟
 
         // 更新活动状态机
         let mut eng = engine.lock();

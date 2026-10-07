@@ -461,7 +461,7 @@ onUnmounted(() => {
 
         <div v-else class="app-list">
           <div
-            v-for="(app, index) in todayStats.slice(0, 8)"
+            v-for="(app, index) in todayStats"
             :key="app.processName"
             class="app-item"
           >
@@ -551,6 +551,18 @@ onUnmounted(() => {
   padding: 14px;
   position: relative;
   overflow: hidden;
+}
+
+/* 应用排行卡片：最多显示 8 个，超出滚动 */
+.apps-card {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 分类统计卡片：固定在下面 */
+.categories-card {
+  flex-shrink: 0;
 }
 
 /* 总时长卡片 */
@@ -884,6 +896,27 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  max-height: 280px;
+  overflow-y: auto;
+  padding-right: 4px;
+  margin-right: -4px;
+}
+
+.app-list::-webkit-scrollbar {
+  width: 4px;
+}
+
+.app-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.app-list::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 2px;
+}
+
+.app-list::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
 }
 
 .app-item {
