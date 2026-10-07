@@ -42,7 +42,24 @@ Built with Tauri 2 + Vue 3 + Rust + SQLite. All data stays on your machine.
 
 ## Screenshots
 
-> TODO: add screenshots of Dashboard / Timeline / Heatmap
+<table>
+  <tr>
+    <td width="50%" align="center"><img src="docs/images/first.png" alt="Dashboard Overview" /></td>
+    <td width="50%" align="center"><img src="docs/images/two.png" alt="Timeline" /></td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">Overview Dashboard</td>
+    <td width="50%" align="center">Timeline</td>
+  </tr>
+  <tr>
+    <td width="50%" align="center"><img src="docs/images/three.png" alt="Statistics" /></td>
+    <td width="50%" align="center"><img src="docs/images/four.png" alt="Heatmap" /></td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">Statistics</td>
+    <td width="50%" align="center">Heatmap</td>
+  </tr>
+</table>
 
 ## Installation
 

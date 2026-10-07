@@ -42,7 +42,24 @@ TimeSense 是一款轻量级桌面应用，自动追踪你正在使用的应用�
 
 ## 界面截图
 
-> TODO：待补充 看板 / 时间轴 / 热力图 截图
+<table>
+  <tr>
+    <td width="50%" align="center"><img src="docs/images/first.png" alt="概览看板" /></td>
+    <td width="50%" align="center"><img src="docs/images/two.png" alt="时间轴" /></td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">概览看板</td>
+    <td width="50%" align="center">时间轴</td>
+  </tr>
+  <tr>
+    <td width="50%" align="center"><img src="docs/images/three.png" alt="数据统计" /></td>
+    <td width="50%" align="center"><img src="docs/images/four.png" alt="热力图" /></td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">数据统计</td>
+    <td width="50%" align="center">热力图</td>
+  </tr>
+</table>
 
 ## 安装
 
