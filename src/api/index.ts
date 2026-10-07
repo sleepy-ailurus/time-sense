@@ -11,6 +11,7 @@ import type {
   PomodoroSettings,
   PomodoroStatus,
   TodayTotal,
+  UpdateInfo,
 } from "./types";
 
 /**
@@ -192,6 +193,11 @@ export function updateGeneralSettings(settings: GeneralSettings): Promise<void> 
 /** 获取应用版本号 */
 export function getAppVersion(): Promise<string> {
   return call<string>("get_app_version");
+}
+
+/** 检查更新：Rust 端依次尝试 Gitee / jsDelivr / GitHub API，返回最新版本信息 */
+export function checkUpdateInfo(): Promise<UpdateInfo> {
+  return call<UpdateInfo>("check_update");
 }
 
 /** 开始专注 */

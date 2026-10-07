@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted, onUnmounted, computed, watch } from "vue";
-import { getPomodoroSettings, updatePomodoroSettings, getGeneralSettings, updateGeneralSettings, getAppVersion } from "../api";
+import { getPomodoroSettings, updatePomodoroSettings, getGeneralSettings, updateGeneralSettings, getAppVersion, checkUpdateInfo } from "../api";
 import type { PomodoroSettings, GeneralSettings } from "../api/types";
 import { Timer, Settings, Info, Check, Loader2, ExternalLink } from "lucide-vue-next";
 import { invoke } from "@tauri-apps/api/core";
@@ -247,6 +247,7 @@ const checkingUpdate = ref(false);
 const updateResult = ref<"none" | "new" | "error" | null>(null);
 const latestVersion = ref("");
 const updateMessage = ref("");
+const downloadUrl = ref("");
 
 function openUrl(url: string) {
   invoke("open_url", { url }).catch(() => {});
@@ -274,23 +275,23 @@ async function checkUpdate() {
   updateResult.value = null;
   updateMessage.value = "";
   latestVersion.value = "";
+  downloadUrl.value = "";
   try {
-    const res = await fetch("https://api.github.com/repos/sleepy-ailurus/time-sense/releases/latest");
-    if (!res.ok) throw new Error("请求失败");
-    const data = await res.json();
-    const remote = data.tag_name?.replace(/^v/, "") || "";
+    const info = await checkUpdateInfo();
+    latestVersion.value = info.version;
+    downloadUrl.value = info.url;
     const current = appVersion.value.replace(/^v/, "");
-    latestVersion.value = remote;
-    if (compareVersions(remote, current) > 0) {
+    if (compareVersions(info.version, current) > 0) {
       updateResult.value = "new";
-      updateMessage.value = `发现新版本 v${remote}`;
+      updateMessage.value = `发现新版本 v${info.version}，点击右侧图标前往下载`;
     } else {
       updateResult.value = "none";
       updateMessage.value = "已是最新版本";
     }
   } catch (e: any) {
     updateResult.value = "error";
-    updateMessage.value = "检查更新失败，请稍后再试";
+    const reason = typeof e === "string" && e ? e : "网络异常";
+    updateMessage.value = `检查更新失败（${reason}）`;
   } finally {
     checkingUpdate.value = false;
   }
@@ -552,7 +553,7 @@ onUnmounted(() => {
               </span>
             </div>
             <Loader2 v-if="checkingUpdate" class="spin" :size="18" :stroke-width="1.8" />
-            <ExternalLink v-else-if="updateResult === 'new'" :size="18" :stroke-width="1.8" @click.stop="openUrl(repoUrl + '/releases')" />
+            <ExternalLink v-else-if="updateResult === 'new'" :size="18" :stroke-width="1.8" @click.stop="openUrl(downloadUrl || repoUrl + '/releases')" />
             <ExternalLink v-else :size="18" :stroke-width="1.8" />
           </div>
           <div class="about-action-item" @click="openUrl(issuesUrl)">

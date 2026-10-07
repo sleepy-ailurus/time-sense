@@ -86,6 +86,15 @@ pub fn run() {
             // 设置托盘
             let _tray = tray::setup_tray(app.handle())?;
 
+            // 启动时同步开机自启注册表：确保 DB 中的设置与系统注册表一致
+            // （首次安装默认 auto_start=true，此处把自启写进注册表使其真正生效）
+            {
+                let gs = general_settings.read();
+                if let Err(e) = commands::apply_autostart(app.handle(), gs.auto_start) {
+                    tracing::warn!("Failed to sync autostart on startup: {}", e);
+                }
+            }
+
             // 监听主窗口事件：点「关闭」时隐藏到托盘，不退出程序
             //
             // 这里只处理 CloseRequested，**不要**把最小化事件转成 hide()：
@@ -122,6 +131,7 @@ pub fn run() {
             commands::should_show_window_on_start,
             commands::get_app_version,
             commands::open_url,
+            commands::check_update,
             commands::get_activity_by_date,
             // 分类
             commands::get_categories,

@@ -104,6 +104,85 @@ pub fn open_url(url: String) -> Result<(), String> {
     webbrowser::open(&url).map_err(|e| e.to_string())
 }
 
+// ==================== 检查更新 ====================
+
+/// 最新版本信息
+#[derive(serde::Serialize)]
+pub struct UpdateInfo {
+    pub version: String,
+    pub url: String,
+}
+
+/// 更新源（latest.json 静态文件，无 CORS / 限流问题）
+const UPDATE_SOURCES: &[&str] = &[
+    // Gitee raw：国内访问最稳
+    "https://gitee.com/sleepy-ailurus/time-sense/raw/master/latest.json",
+    // jsDelivr：GitHub 仓库 CDN 镜像
+    "https://cdn.jsdelivr.net/gh/sleepy-ailurus/time-sense@master/latest.json",
+];
+
+/// 检查更新：在 Rust 端依次尝试 Gitee / jsDelivr 的 latest.json，
+/// 最后回退到 GitHub API（匿名请求可能被限流）。
+/// 网络请求放在 Rust 端而非前端 webview，可绕过浏览器 CORS 限制。
+#[tauri::command]
+pub async fn check_update() -> Result<UpdateInfo, String> {
+    tauri::async_runtime::spawn_blocking(fetch_latest_update)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn fetch_latest_update() -> Result<UpdateInfo, String> {
+    const GITHUB_RELEASES_URL: &str = "https://github.com/sleepy-ailurus/time-sense/releases";
+
+    // 1) 静态 latest.json 源
+    for source in UPDATE_SOURCES {
+        if let Ok(resp) = ureq::get(source).timeout(std::time::Duration::from_secs(8)).call() {
+            if resp.status() == 200 {
+                if let Ok(json) = resp.into_json::<serde_json::Value>() {
+                    if let Some(version) = json.get("version").and_then(|v| v.as_str()) {
+                        if !version.is_empty() {
+                            let url = json
+                                .get("url")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or(GITHUB_RELEASES_URL);
+                            return Ok(UpdateInfo {
+                                version: version.trim_start_matches('v').to_string(),
+                                url: url.to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2) GitHub API 兜底
+    if let Ok(resp) = ureq::get("https://api.github.com/repos/sleepy-ailurus/time-sense/releases/latest")
+        .set("User-Agent", "TimeSense-Updater")
+        .timeout(std::time::Duration::from_secs(8))
+        .call()
+    {
+        if resp.status() == 200 {
+            if let Ok(json) = resp.into_json::<serde_json::Value>() {
+                if let Some(tag) = json.get("tag_name").and_then(|v| v.as_str()) {
+                    if !tag.is_empty() {
+                        let url = json
+                            .get("html_url")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(GITHUB_RELEASES_URL);
+                        return Ok(UpdateInfo {
+                            version: tag.trim_start_matches('v').to_string(),
+                            url: url.to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    Err("所有更新源均不可用，请检查网络后重试".into())
+}
+
 /// 获取指定日期的所有活动记录
 #[tauri::command]
 pub fn get_activity_by_date(state: State<AppState>, date: String) -> Result<Vec<ActivityLog>, String> {
@@ -276,7 +355,7 @@ pub fn update_general_settings(
 
 /// 应用开机自启设置（Windows 注册表方式）
 #[cfg(target_os = "windows")]
-fn apply_autostart(_app: &AppHandle, enable: bool) -> Result<(), String> {
+pub fn apply_autostart(_app: &AppHandle, enable: bool) -> Result<(), String> {
     use winreg::enums::*;
     use winreg::RegKey;
 
@@ -315,7 +394,7 @@ fn apply_autostart(_app: &AppHandle, enable: bool) -> Result<(), String> {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn apply_autostart(_app: &AppHandle, _enable: bool) -> Result<(), String> {
+pub fn apply_autostart(_app: &AppHandle, _enable: bool) -> Result<(), String> {
     Ok(())
 }
 

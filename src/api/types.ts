@@ -34,6 +34,15 @@ export interface TodayTotal {
 }
 
 /**
+ * 更新信息（来自 latest.json / GitHub API）
+ */
+export interface UpdateInfo {
+  version: string;
+  url: string;
+  notes?: string;
+}
+
+/**
  * 当前活动状态
  */
 export interface CurrentActivity {

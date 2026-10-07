@@ -182,7 +182,7 @@ pub struct GeneralSettings {
 impl Default for GeneralSettings {
     fn default() -> Self {
         Self {
-            auto_start: false,
+            auto_start: true,
             notification_enabled: true,
             idle_threshold_minutes: 3,
         }
