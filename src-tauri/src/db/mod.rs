@@ -5,6 +5,7 @@ pub mod rule_dao;
 pub mod pomodoro_dao;
 pub mod settings_dao;
 pub mod aggregates_dao;
+pub mod goal_dao;
 pub mod migration;
 
 use std::path::PathBuf;
@@ -20,6 +21,7 @@ pub use rule_dao::{RuleDao, RuleMatcher};
 pub use pomodoro_dao::PomodoroDao;
 pub use settings_dao::SettingsDao;
 pub use aggregates_dao::AggregatesDao;
+pub use goal_dao::GoalDao;
 
 /// 数据库封装
 pub struct Database {

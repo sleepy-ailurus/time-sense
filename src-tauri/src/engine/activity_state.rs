@@ -12,6 +12,8 @@ struct CurrentState {
     start_time: i64,
     is_idle: bool,
     category_id: Option<i64>,
+    /// 站点标签（title 规则命中时的展示名，如「抖音」）
+    site_label: Option<String>,
     /// 当前活动在数据库中的记录 ID（活动开始时立即插入）
     log_id: Option<i64>,
 }
@@ -80,7 +82,18 @@ impl ActivityStateMachine {
     }
 
     /// 每次轮询调用，传入当前窗口信息和是否空闲
-    pub fn tick(&mut self, window: &WindowInfo, is_idle: bool, debounce_secs: i64) {
+    /// 处理一次采样。
+    ///
+    /// `idle_since` 为「最后一次用户输入」的时间戳（秒）：进入空闲状态时以它作为空闲段开始时间，
+    /// 这样「已空闲」反映的是真正离开电脑的时长，而不是从判定为空闲的那一刻起算。
+    /// 返回本次是否真的发生了状态切换（供上层推送事件）。
+    pub fn tick(
+        &mut self,
+        window: &WindowInfo,
+        is_idle: bool,
+        debounce_secs: i64,
+        idle_since: Option<i64>,
+    ) -> bool {
         let now = Utc::now().timestamp();
         let target_process = window.process_name.clone();
         let target_title = window.window_title.clone();
@@ -104,7 +117,7 @@ impl ActivityStateMachine {
                 self.flush_current(now);
                 self.flush_tick_count = 0;
             }
-            return;
+            return false;
         }
 
         // 状态变化了，检查防抖
@@ -133,21 +146,39 @@ impl ActivityStateMachine {
                 // 新的待切换
                 self.pending_switch = Some((target_process, target_title, now, is_idle));
             }
-            return;
+            return false;
         }
 
         // 防抖通过，正式切换状态
-        self.switch_state(target_process, target_title, now, is_idle);
+        // 空闲段从「真正停止输入」那一刻开始，统计里的时长才准确
+        let switch_at = if is_idle {
+            idle_since.unwrap_or(now).min(now)
+        } else {
+            now
+        };
+        self.switch_state(target_process, target_title, switch_at, is_idle);
         self.pending_switch = None;
         self.flush_tick_count = 0;
+        true
     }
 
-    /// 匹配分类
-    fn match_category(&self, process: &str, title: &str, is_idle: bool) -> Option<i64> {
+    /// 匹配分类与站点标签（title 规则命中时带上展示名）
+    fn match_activity(&self, process: &str, title: &str, is_idle: bool) -> (Option<i64>, Option<String>) {
         if is_idle {
-            return None;
+            return (None, None);
         }
-        RuleMatcher::match_category(&self.rules, process, Some(title))
+        match RuleMatcher::match_rule(&self.rules, process, Some(title)) {
+            Some(rule) => {
+                // 仅 title 规则携带站点标签（浏览器页面级感知）
+                let site_label = if rule.match_type == "title" {
+                    rule.label.clone().filter(|l| !l.trim().is_empty())
+                } else {
+                    None
+                };
+                (Some(rule.category_id), site_label)
+            }
+            None => (None, None),
+        }
     }
 
     /// 切换到新状态：关闭旧状态（更新数据库），开启新状态（立即插入数据库）
@@ -169,8 +200,8 @@ impl ActivityStateMachine {
             }
         }
 
-        // 匹配分类
-        let category_id = self.match_category(&process, &title, is_idle);
+        // 匹配分类与站点标签
+        let (category_id, site_label) = self.match_activity(&process, &title, is_idle);
 
         // 插入新活动记录（开始时即写入，duration=0 表示进行中）
         let log = ActivityLog {
@@ -182,6 +213,7 @@ impl ActivityStateMachine {
             duration: 0,
             is_idle,
             category_id,
+            site_label: site_label.clone(),
         };
 
         let log_id = {
@@ -202,6 +234,7 @@ impl ActivityStateMachine {
             start_time: now,
             is_idle,
             category_id,
+            site_label,
             log_id,
         });
     }
@@ -238,7 +271,8 @@ impl ActivityStateMachine {
     }
 
     /// 获取当前正在进行的活动
-    pub fn get_current(&self) -> Option<(String, String, i64, bool, Option<i64>)> {
+    /// 返回 (进程名, 窗口标题, 开始时间, 是否空闲, 分类ID, 站点标签)
+    pub fn get_current(&self) -> Option<(String, String, i64, bool, Option<i64>, Option<String>)> {
         self.current.as_ref().map(|cur| {
             (
                 cur.process_name.clone(),
@@ -246,6 +280,7 @@ impl ActivityStateMachine {
                 cur.start_time,
                 cur.is_idle,
                 cur.category_id,
+                cur.site_label.clone(),
             )
         })
     }

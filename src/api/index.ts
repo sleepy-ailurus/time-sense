@@ -7,7 +7,10 @@ import type {
   CategoryStat,
   CurrentActivity,
   GeneralSettings,
+  Goal,
+  GoalStatus,
   NewAppRule,
+  NewGoal,
   PomodoroSettings,
   PomodoroStatus,
   TodayTotal,
@@ -108,6 +111,7 @@ export function createCategory(params: {
   name: string;
   color: string;
   icon?: string;
+  isFocus?: boolean;
 }): Promise<number> {
   return call<number>("create_category", params);
 }
@@ -118,6 +122,7 @@ export function updateCategory(params: {
   name: string;
   color: string;
   icon?: string;
+  isFocus?: boolean;
 }): Promise<void> {
   return call<void>("update_category", params);
 }
@@ -159,6 +164,40 @@ export function toggleRule(id: number): Promise<boolean> {
 /** 刷新规则缓存 */
 export function refreshRules(): Promise<void> {
   return call<void>("refresh_rules");
+}
+
+/** 重排规则顺序 */
+export function reorderRules(orderedIds: number[]): Promise<void> {
+  return call<void>("reorder_rules", { orderedIds });
+}
+
+// ============================================================
+// 目标预算相关
+// ============================================================
+
+/** 获取所有目标 */
+export function getGoals(): Promise<Goal[]> {
+  return call<Goal[]>("get_goals");
+}
+
+/** 获取目标状态（含今日已用时长） */
+export function getGoalsStatus(): Promise<GoalStatus[]> {
+  return call<GoalStatus[]>("get_goals_status");
+}
+
+/** 新增目标 */
+export function createGoal(goal: NewGoal): Promise<number> {
+  return call<number>("create_goal", { goal });
+}
+
+/** 更新目标 */
+export function updateGoal(id: number, goal: NewGoal): Promise<void> {
+  return call<void>("update_goal", { id, goal });
+}
+
+/** 删除目标 */
+export function deleteGoal(id: number): Promise<void> {
+  return call<void>("delete_goal", { id });
 }
 
 // ============================================================

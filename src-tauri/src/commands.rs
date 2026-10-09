@@ -2,7 +2,7 @@ use tauri::{State, Window, AppHandle, Emitter};
 
 use crate::db::{
     ActivityDao, ActivityLog, AggregatesDao, AppStat, Category, CategoryDao, CategoryStat,
-    CurrentActivity, DailySummary, GeneralSettings, HeatmapDay, HourlyStat, NewAppRule,
+    CurrentActivity, DailySummary, GeneralSettings, GoalDao, HeatmapDay, HourlyStat, NewAppRule,
     PomodoroSettings, PomodoroStatus, RuleDao, SettingsDao, TodayTotal,
 };
 use crate::AppState;
@@ -31,7 +31,7 @@ pub fn get_current_activity(state: State<AppState>) -> Result<Option<CurrentActi
     let current = engine.get_current();
 
     match current {
-        Some((process_name, window_title, start_time, is_idle, category_id)) => {
+        Some((process_name, window_title, start_time, is_idle, category_id, site_label)) => {
             let duration = engine.get_current_duration();
             // 查分类名称
             let category_name = if let Some(cid) = category_id {
@@ -51,6 +51,7 @@ pub fn get_current_activity(state: State<AppState>) -> Result<Option<CurrentActi
                 is_idle,
                 category_id,
                 category_name,
+                site_label,
             }))
         }
         None => Ok(None),
@@ -208,16 +209,17 @@ pub fn get_today_category_stats(state: State<AppState>, date: Option<String>) ->
 
 /// 新增分类
 #[tauri::command]
-pub fn create_category(state: State<AppState>, name: String, color: String, icon: Option<String>) -> Result<i64, String> {
+pub fn create_category(state: State<AppState>, name: String, color: String, icon: Option<String>, is_focus: Option<bool>) -> Result<i64, String> {
     let conn = state.db.conn().lock();
-    CategoryDao::create(&conn, &name, &color, icon.as_deref()).map_err(|e| e.to_string())
+    CategoryDao::create(&conn, &name, &color, icon.as_deref(), is_focus.unwrap_or(false)).map_err(|e| e.to_string())
 }
 
 /// 更新分类
 #[tauri::command]
-pub fn update_category(state: State<AppState>, id: i64, name: String, color: String, icon: Option<String>) -> Result<(), String> {
+pub fn update_category(state: State<AppState>, id: i64, name: String, color: String, icon: Option<String>, is_focus: Option<bool>) -> Result<(), String> {
     let conn = state.db.conn().lock();
-    CategoryDao::update(&conn, id, &name, &color, icon.as_deref()).map_err(|e| e.to_string())
+    CategoryDao::update(&conn, id, &name, &color, icon.as_deref(), is_focus.unwrap_or(false))
+        .map_err(|e| e.to_string())
 }
 
 /// 删除分类
@@ -225,6 +227,13 @@ pub fn update_category(state: State<AppState>, id: i64, name: String, color: Str
 pub fn delete_category(state: State<AppState>, id: i64) -> Result<(), String> {
     let conn = state.db.conn().lock();
     CategoryDao::delete(&conn, id).map_err(|e| e.to_string())
+}
+
+/// 显示/隐藏主面板（全局快捷键「显示/隐藏主面板」调用）
+#[tauri::command]
+pub fn toggle_main_window(app: AppHandle) -> Result<(), String> {
+    crate::tray::toggle_main_window(&app);
+    Ok(())
 }
 
 // ==================== 规则相关 ====================
@@ -296,7 +305,58 @@ pub fn refresh_rules(state: State<AppState>) -> Result<(), String> {
     Ok(())
 }
 
+/// 重排规则顺序
+#[tauri::command]
+pub fn reorder_rules(state: State<AppState>, ordered_ids: Vec<i64>) -> Result<(), String> {
+    {
+        let conn = state.db.conn().lock();
+        RuleDao::reorder(&conn, &ordered_ids).map_err(|e| e.to_string())?;
+    }
+    let mut engine = state.activity_engine.lock();
+    engine.refresh_rules();
+    Ok(())
+}
+
 // ==================== 番茄钟相关 ====================
+
+// ==================== 番茄钟相关 ====================
+
+// ==================== 目标预算相关 ====================
+
+/// 获取所有目标
+#[tauri::command]
+pub fn get_goals(state: State<AppState>) -> Result<Vec<crate::db::Goal>, String> {
+    let conn = state.db.conn().lock();
+    GoalDao::list_all(&conn).map_err(|e| e.to_string())
+}
+
+/// 获取目标状态（含今日已用时长）
+#[tauri::command]
+pub fn get_goals_status(state: State<AppState>) -> Result<Vec<crate::db::GoalStatus>, String> {
+    let conn = state.db.conn().lock();
+    GoalDao::get_active_goals_status(&conn).map_err(|e| e.to_string())
+}
+
+/// 新增目标
+#[tauri::command]
+pub fn create_goal(state: State<AppState>, goal: crate::db::NewGoal) -> Result<i64, String> {
+    let conn = state.db.conn().lock();
+    GoalDao::create(&conn, &goal).map_err(|e| e.to_string())
+}
+
+/// 更新目标
+#[tauri::command]
+pub fn update_goal(state: State<AppState>, id: i64, goal: crate::db::NewGoal) -> Result<(), String> {
+    let conn = state.db.conn().lock();
+    GoalDao::update(&conn, id, &goal).map_err(|e| e.to_string())
+}
+
+/// 删除目标
+#[tauri::command]
+pub fn delete_goal(state: State<AppState>, id: i64) -> Result<(), String> {
+    let conn = state.db.conn().lock();
+    GoalDao::delete(&conn, id).map_err(|e| e.to_string())
+}
 
 /// 获取番茄钟状态
 #[tauri::command]
@@ -452,6 +512,21 @@ pub fn resume_pomodoro(state: State<AppState>, app: AppHandle) -> PomodoroStatus
 #[tauri::command]
 pub fn skip_pomodoro(state: State<AppState>, app: AppHandle) -> PomodoroStatus {
     let status = state.pomodoro.skip();
+    let _ = tray::on_pomodoro_phase_change(&app, &status);
+    status
+}
+
+/// 快捷键切换番茄钟：未运行→开始专注，运行中→暂停，暂停中→继续
+#[tauri::command]
+pub fn toggle_pomodoro_focus(state: State<AppState>, app: AppHandle) -> PomodoroStatus {
+    let current = state.pomodoro.get_status();
+    let status = if !current.is_running {
+        state.pomodoro.start_focus()
+    } else if current.is_paused {
+        state.pomodoro.resume(false)
+    } else {
+        state.pomodoro.pause()
+    };
     let _ = tray::on_pomodoro_phase_change(&app, &status);
     status
 }

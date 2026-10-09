@@ -2,7 +2,7 @@ use rusqlite::{params, Connection};
 use anyhow::Result;
 
 /// 当前数据库版本
-pub const CURRENT_VERSION: i32 = 5;
+pub const CURRENT_VERSION: i32 = 8;
 
 /// 所有迁移脚本（按版本号顺序排列）
 /// 索引 0 对应 v1（初始建表）
@@ -12,7 +12,23 @@ const MIGRATIONS: &[fn(&Connection) -> Result<()>] = &[
     migration_v3,
     migration_v4,
     migration_v5,
+    migration_v6,
+    migration_v7,
+    migration_v8,
 ];
+
+/// v8: 分类增加「计入专注时长」标记（热力图 = 所有勾选了该标记的分类）
+fn migration_v8(conn: &Connection) -> Result<()> {
+    conn.execute("ALTER TABLE categories ADD COLUMN is_focus INTEGER DEFAULT 0", []).ok();
+
+    // 保持既有语义：工作、学习算专注，其余不算
+    conn.execute(
+        "UPDATE categories SET is_focus = 1 WHERE name IN ('工作', '学习', 'Work', 'Study')",
+        [],
+    )?;
+
+    Ok(())
+}
 
 /// 执行数据库迁移
 pub fn run_migrations(conn: &Connection) -> Result<()> {
@@ -138,6 +154,92 @@ fn migration_v5(conn: &Connection) -> Result<()> {
         "#,
         [],
     )?;
+    Ok(())
+}
+
+/// v6: 浏览器页面级感知 —— 站点标签 + 种子站点规则
+fn migration_v6(conn: &Connection) -> Result<()> {
+    // 活动记录增加站点标签列（title 规则命中时记录站点名，如「抖音」），
+    // 统计按 site_label 聚合，浏览器时长即可显示为「抖音 1小时」而非「Chrome 1小时」
+    conn.execute("ALTER TABLE activity_logs ADD COLUMN site_label TEXT", []).ok();
+
+    // 规则增加显示名列（match_value=bilibili → label=B站，统计展示用）
+    conn.execute("ALTER TABLE app_rules ADD COLUMN label TEXT", []).ok();
+
+    // 为 v4 已内置的 title 规则补显示名
+    let existing_label_updates = [
+        ("B站", "B站"),
+        ("bilibili", "B站"),
+        ("知乎", "知乎"),
+        ("抖音", "抖音"),
+        ("快手", "快手"),
+    ];
+    for (value, label) in existing_label_updates {
+        conn.execute(
+            "UPDATE app_rules SET label = ?1 WHERE match_type = 'title' AND match_value = ?2",
+            params![label, value],
+        )?;
+    }
+
+    // 新增种子站点规则（title contains + 显示名），同值规则已存在则跳过（不覆盖用户自建）
+    // (分类名, 匹配值, 显示名)
+    let seed_rules = [
+        // 娱乐
+        ("娱乐", "腾讯视频", "腾讯视频"),
+        ("娱乐", "爱奇艺", "爱奇艺"),
+        ("娱乐", "优酷", "优酷"),
+        ("娱乐", "YouTube", "YouTube"),
+        ("娱乐", "斗鱼", "斗鱼"),
+        ("娱乐", "虎牙", "虎牙"),
+        // 社交
+        ("社交", "微博", "微博"),
+        ("社交", "小红书", "小红书"),
+        // 学习
+        ("学习", "掘金", "掘金"),
+        ("学习", "CSDN", "CSDN"),
+        ("学习", "StackOverflow", "StackOverflow"),
+        ("学习", "LeetCode", "力扣"),
+        ("学习", "力扣", "力扣"),
+        // 工作
+        ("工作", "GitHub", "GitHub"),
+        ("工作", "Gitee", "Gitee"),
+    ];
+
+    for (cat_name, match_value, label) in seed_rules {
+        conn.execute(
+            "INSERT INTO app_rules (category_id, match_type, match_value, match_mode, label, sort_order, enabled)
+             SELECT c.id, 'title', ?2, 'contains', ?3, 0, 1
+             FROM categories c
+             WHERE c.name = ?1
+               AND NOT EXISTS (SELECT 1 FROM app_rules WHERE match_type = 'title' AND match_value = ?2)",
+            params![cat_name, match_value, label],
+        )?;
+    }
+
+    Ok(())
+}
+
+/// v7: 目标预算表
+fn migration_v7(conn: &Connection) -> Result<()> {
+    conn.execute(
+        r#"
+        CREATE TABLE IF NOT EXISTS goals (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            category_id         INTEGER NOT NULL,
+            daily_limit_minutes INTEGER NOT NULL,
+            enabled             INTEGER DEFAULT 1,
+            created_at          INTEGER DEFAULT (strftime('%s','now')),
+            FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE CASCADE
+        )
+        "#,
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_goals_category ON goals(category_id)",
+        [],
+    )?;
+
     Ok(())
 }
 

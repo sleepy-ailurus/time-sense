@@ -50,6 +50,7 @@ pub fn run() {
             tray::show_main_window(app);
         }))
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
             // 是否由开机自启拉起：开机自启的注册表命令带 --autostart 参数，
             // 此时保持窗口隐藏静默驻留托盘；普通启动由前端恢复位置后显示窗口
@@ -119,6 +120,23 @@ pub fn run() {
                 engine::start_monitor_loop(app_handle, activity_engine, pomodoro, is_recording, db, gs_clone).await;
             });
 
+            // 兜底显示：正常启动时，若前端因加载异常未调用 show()，3 秒后强制显示窗口，
+            // 避免出现「进程在跑但界面永远不出现」的死状态（开机自启场景保持隐藏，不干预）
+            if !started_with_autostart {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    if let Some(win) = handle.get_webview_window("main") {
+                        if !win.is_visible().unwrap_or(true) {
+                            tracing::warn!("Failsafe: frontend did not show main window, forcing visible");
+                            let _ = win.show();
+                            let _ = win.unminimize();
+                            let _ = win.set_focus();
+                        }
+                    }
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -128,6 +146,7 @@ pub fn run() {
             commands::is_recording,
             commands::toggle_recording,
             commands::hide_main_window,
+            commands::toggle_main_window,
             commands::should_show_window_on_start,
             commands::get_app_version,
             commands::open_url,
@@ -146,6 +165,13 @@ pub fn run() {
             commands::delete_rule,
             commands::toggle_rule,
             commands::refresh_rules,
+            commands::reorder_rules,
+            // 目标预算
+            commands::get_goals,
+            commands::get_goals_status,
+            commands::create_goal,
+            commands::update_goal,
+            commands::delete_goal,
             // 番茄钟
             commands::get_pomodoro_status,
             commands::get_pomodoro_settings,
@@ -156,6 +182,7 @@ pub fn run() {
             commands::pause_pomodoro,
             commands::resume_pomodoro,
             commands::skip_pomodoro,
+            commands::toggle_pomodoro_focus,
             // 常规设置
             commands::get_general_settings,
             commands::update_general_settings,

@@ -9,13 +9,14 @@ impl CategoryDao {
     /// 获取所有分类（按排序号）
     pub fn list_all(conn: &Connection) -> Result<Vec<Category>> {
         let mut stmt = conn.prepare(
-            "SELECT id, name, color, icon, sort_order, is_default 
+            "SELECT id, name, color, icon, sort_order, is_default, COALESCE(is_focus, 0)
              FROM categories 
              ORDER BY sort_order ASC, id ASC",
         )?;
 
         let rows = stmt.query_map([], |row| {
             let is_default_int: i32 = row.get(5)?;
+            let is_focus_int: i32 = row.get(6)?;
             Ok(Category {
                 id: row.get(0)?,
                 name: row.get(1)?,
@@ -23,6 +24,7 @@ impl CategoryDao {
                 icon: row.get(3)?,
                 sort_order: row.get(4)?,
                 is_default: is_default_int == 1,
+                is_focus: is_focus_int == 1,
             })
         })?;
 
@@ -36,13 +38,14 @@ impl CategoryDao {
     /// 按 ID 获取分类
     pub fn get_by_id(conn: &Connection, id: i64) -> Result<Option<Category>> {
         let mut stmt = conn.prepare(
-            "SELECT id, name, color, icon, sort_order, is_default 
+            "SELECT id, name, color, icon, sort_order, is_default, COALESCE(is_focus, 0)
              FROM categories WHERE id = ?1",
         )?;
 
         let mut rows = stmt.query(params![id])?;
         if let Some(row) = rows.next()? {
             let is_default_int: i32 = row.get(5)?;
+            let is_focus_int: i32 = row.get(6)?;
             Ok(Some(Category {
                 id: row.get(0)?,
                 name: row.get(1)?,
@@ -50,6 +53,7 @@ impl CategoryDao {
                 icon: row.get(3)?,
                 sort_order: row.get(4)?,
                 is_default: is_default_int == 1,
+                is_focus: is_focus_int == 1,
             }))
         } else {
             Ok(None)
@@ -59,13 +63,14 @@ impl CategoryDao {
     /// 按名称查找分类
     pub fn get_by_name(conn: &Connection, name: &str) -> Result<Option<Category>> {
         let mut stmt = conn.prepare(
-            "SELECT id, name, color, icon, sort_order, is_default 
+            "SELECT id, name, color, icon, sort_order, is_default, COALESCE(is_focus, 0)
              FROM categories WHERE name = ?1",
         )?;
 
         let mut rows = stmt.query(params![name])?;
         if let Some(row) = rows.next()? {
             let is_default_int: i32 = row.get(5)?;
+            let is_focus_int: i32 = row.get(6)?;
             Ok(Some(Category {
                 id: row.get(0)?,
                 name: row.get(1)?,
@@ -73,6 +78,7 @@ impl CategoryDao {
                 icon: row.get(3)?,
                 sort_order: row.get(4)?,
                 is_default: is_default_int == 1,
+                is_focus: is_focus_int == 1,
             }))
         } else {
             Ok(None)
@@ -80,19 +86,19 @@ impl CategoryDao {
     }
 
     /// 新增分类
-    pub fn create(conn: &Connection, name: &str, color: &str, icon: Option<&str>) -> Result<i64> {
+    pub fn create(conn: &Connection, name: &str, color: &str, icon: Option<&str>, is_focus: bool) -> Result<i64> {
         conn.execute(
-            "INSERT INTO categories (name, color, icon) VALUES (?1, ?2, ?3)",
-            params![name, color, icon],
+            "INSERT INTO categories (name, color, icon, is_focus) VALUES (?1, ?2, ?3, ?4)",
+            params![name, color, icon, is_focus as i32],
         )?;
         Ok(conn.last_insert_rowid())
     }
 
     /// 更新分类
-    pub fn update(conn: &Connection, id: i64, name: &str, color: &str, icon: Option<&str>) -> Result<()> {
+    pub fn update(conn: &Connection, id: i64, name: &str, color: &str, icon: Option<&str>, is_focus: bool) -> Result<()> {
         conn.execute(
-            "UPDATE categories SET name = ?1, color = ?2, icon = ?3 WHERE id = ?4",
-            params![name, color, icon, id],
+            "UPDATE categories SET name = ?1, color = ?2, icon = ?3, is_focus = ?4 WHERE id = ?5",
+            params![name, color, icon, is_focus as i32, id],
         )?;
         Ok(())
     }

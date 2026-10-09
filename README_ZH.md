@@ -16,7 +16,7 @@
 
 <p align="center">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-green" />
-  <img alt="release" src="https://img.shields.io/badge/release-v0.1.0-blue" />
+  <img alt="release" src="https://img.shields.io/badge/release-v1.0.0-blue" />
   <img alt="platform" src="https://img.shields.io/badge/platform-Windows%2010%2F11-blue" />
   <img alt="tauri" src="https://img.shields.io/badge/Tauri-2.x-orange" />
   <img alt="vue" src="https://img.shields.io/badge/Vue-3-brightgreen" />
@@ -63,7 +63,7 @@ TimeSense 是一款轻量级桌面应用，自动追踪你正在使用的应用�
 
 ## 安装
 
-1. 从 [Releases](https://github.com/sleepy-ailurus/time-sense/releases) 下载最新的 `TimeSense_0.1.0_x64-setup.exe` 安装程序
+1. 从 [Releases](https://github.com/sleepy-ailurus/time-sense/releases) 下载最新的 `TimeSense_1.0.0_x64-setup.exe` 安装程序
 2. 运行安装程序，按向导提示完成安装
 3. 启动 TimeSense —— 它会常驻系统托盘
 

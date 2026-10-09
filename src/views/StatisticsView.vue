@@ -1,7 +1,7 @@
 <template>
   <div class="page-container">
     <div class="page-header">
-      <h2 class="page-title">数据统计</h2>
+      <h2 class="page-title">{{ t('statistics.title') }}</h2>
       <div class="date-picker-wrap">
         <n-date-picker v-model:value="selectedDate" type="date" :clearable="false" />
       </div>
@@ -9,22 +9,22 @@
 
     <div class="stats-grid">
       <div class="chart-card">
-        <h3 class="chart-title">应用占比</h3>
+        <h3 class="chart-title">{{ t('statistics.appShare') }}</h3>
         <div class="chart-container pie-chart" ref="appPieRef"></div>
       </div>
       <div class="chart-card">
-        <h3 class="chart-title">分类占比</h3>
+        <h3 class="chart-title">{{ t('statistics.categoryShare') }}</h3>
         <div class="chart-container pie-chart" ref="categoryPieRef"></div>
       </div>
     </div>
 
     <div class="chart-card">
-      <h3 class="chart-title">近 7 天趋势</h3>
+      <h3 class="chart-title">{{ t('statistics.trend7') }}</h3>
       <div class="chart-container trend-chart" ref="trendChartRef"></div>
     </div>
 
     <div class="chart-card">
-      <h3 class="chart-title">时段分布</h3>
+      <h3 class="chart-title">{{ t('statistics.hourly') }}</h3>
       <div class="chart-container hourly-chart" ref="hourlyChartRef"></div>
     </div>
   </div>
@@ -32,13 +32,17 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { NDatePicker } from 'naive-ui'
 import { format } from 'date-fns'
 import { invoke } from '@tauri-apps/api/core'
 import * as echarts from 'echarts'
 import { escapeHtml } from '../utils/format'
+import { categoryLabel } from '../utils/categoryName'
 import type { AppStat, CategoryStat, DailySummary, HourlyStat } from '../api/types'
 import './timeline.css'
+
+const { t, tm, locale } = useI18n()
 
 const selectedDate = ref<number>(Date.now())
 const appStats = ref<AppStat[]>([])
@@ -60,23 +64,23 @@ let hourlyChart: echarts.ECharts | null = null
 
 function formatDuration(seconds: number): string {
   if (seconds < 3600) {
-    return `${Math.floor(seconds / 60)} 分钟`
+    return t('common.durationMinutes', { m: Math.floor(seconds / 60) })
   }
   const hours = Math.floor(seconds / 3600)
   const minutes = Math.floor((seconds % 3600) / 60)
   if (minutes === 0) {
-    return `${hours} 小时`
+    return t('common.durationHours', { h: hours })
   }
-  return `${hours}h ${minutes}m`
+  return t('common.durationHourMin', { h: hours, m: minutes })
 }
 
 function formatDurationShort(seconds: number): string {
   if (seconds < 3600) {
-    return `${Math.floor(seconds / 60)}分钟`
+    return t('common.durationMinShort', { m: Math.floor(seconds / 60) })
   }
   const hours = Math.floor(seconds / 3600)
   const minutes = Math.floor((seconds % 3600) / 60)
-  return `${hours}h${minutes}m`
+  return t('common.durationHourMinShort', { h: hours, m: minutes })
 }
 
 // 渐变色系（暗色主题适配）
@@ -131,8 +135,8 @@ function renderAppPieChart() {
       formatter: (params: any) => {
         const pct = params.percent != null ? params.percent.toFixed(1) : '0'
         return `<div style="font-weight: 600; margin-bottom: 4px;">${escapeHtml(params.name)}</div>
-                <div>时长：${formatDuration(params.value)}</div>
-                <div>占比：${pct}%</div>`
+                <div>${t('statistics.duration')}：${formatDuration(params.value)}</div>
+                <div>${t('statistics.percent')}：${pct}%</div>`
       },
     },
     legend: {
@@ -140,7 +144,7 @@ function renderAppPieChart() {
     },
     series: [
       {
-        name: '应用占比',
+        name: t('statistics.appShare'),
         type: 'pie',
         radius: ['50%', '75%'],
         center: ['50%', '50%'],
@@ -197,7 +201,7 @@ function renderAppPieChart() {
         left: 'center',
         top: '55%',
         style: {
-          text: '应用总数',
+          text: t('statistics.appCount'),
           align: 'center',
           fill: '#a0a0a0',
           fontSize: 12,
@@ -230,7 +234,7 @@ function renderCategoryPieChart() {
   }
 
   const data = categoryStats.value.map((cat) => ({
-    name: cat.categoryName,
+    name: categoryLabel(cat.categoryName),
     value: cat.totalSeconds,
     itemStyle: {
       color: cat.categoryColor,
@@ -251,8 +255,8 @@ function renderCategoryPieChart() {
       formatter: (params: any) => {
         const pct = params.percent != null ? params.percent.toFixed(1) : '0'
         return `<div style="font-weight: 600; margin-bottom: 4px;">${escapeHtml(params.name)}</div>
-                <div>时长：${formatDuration(params.value)}</div>
-                <div>占比：${pct}%</div>`
+                <div>${t('statistics.duration')}：${formatDuration(params.value)}</div>
+                <div>${t('statistics.percent')}：${pct}%</div>`
       },
     },
     legend: {
@@ -269,7 +273,7 @@ function renderCategoryPieChart() {
     },
     series: [
       {
-        name: '分类占比',
+        name: t('statistics.categoryShare'),
         type: 'pie',
         radius: ['55%', '78%'],
         center: ['40%', '50%'],
@@ -284,7 +288,7 @@ function renderCategoryPieChart() {
           position: 'center',
           formatter: [
             `{a|${formatDurationShort(totalSeconds)}}`,
-            '{b|总时长}',
+            `{b|${t('statistics.totalDuration')}}`,
           ].join('\n'),
           rich: {
             a: {
@@ -340,21 +344,51 @@ function renderTrendChart() {
     return `${parts[1]}/${parts[2]}`
   })
 
-  const categoryConfig = [
-    { key: 'workSeconds', name: '工作', color: '#3B82F6' },
-    { key: 'studySeconds', name: '学习', color: '#10B981' },
-    { key: 'entertainmentSeconds', name: '娱乐', color: '#EF4444' },
-    { key: 'socialSeconds', name: '社交', color: '#8B5CF6' },
-    { key: 'otherSeconds', name: '其他', color: '#6B7280' },
-  ] as const
+  // 分类维度：优先用后端返回的分类明细（含用户自建分类），
+  // 老数据（没有明细字段）才回退到固定的 5 个内置分类
+  type TrendCategory = { name: string; color: string; valueOf: (d: DailySummary) => number }
+
+  const hasBreakdown = weeklyTrend.value.some((d) => (d.categorySeconds?.length ?? 0) > 0)
+
+  const trendCategories: TrendCategory[] = hasBreakdown
+    ? (() => {
+        const meta = new Map<number, { name: string; color: string }>()
+        for (const day of weeklyTrend.value) {
+          for (const slice of day.categorySeconds ?? []) {
+            if (!meta.has(slice.categoryId)) {
+              meta.set(slice.categoryId, {
+                name: categoryLabel(slice.categoryName),
+                color: slice.categoryColor || '#6B7280',
+              })
+            }
+          }
+        }
+        return [...meta.entries()]
+          .map(([id, m]) => ({
+            name: m.name,
+            color: m.color,
+            valueOf: (d: DailySummary) =>
+              (d.categorySeconds ?? []).find((s) => s.categoryId === id)?.seconds ?? 0,
+          }))
+          .sort((a, b) =>
+            Math.max(...weeklyTrend.value.map(b.valueOf)) - Math.max(...weeklyTrend.value.map(a.valueOf)),
+          )
+      })()
+    : [
+        { name: t('statistics.work'), color: '#3B82F6', valueOf: (d: DailySummary) => d.workSeconds },
+        { name: t('statistics.study'), color: '#10B981', valueOf: (d: DailySummary) => d.studySeconds },
+        { name: t('statistics.entertainment'), color: '#EF4444', valueOf: (d: DailySummary) => d.entertainmentSeconds },
+        { name: t('statistics.social'), color: '#8B5CF6', valueOf: (d: DailySummary) => d.socialSeconds },
+        { name: t('statistics.other'), color: '#6B7280', valueOf: (d: DailySummary) => d.otherSeconds },
+      ]
 
   // 过滤掉 7 天全为 0 的分类
-  const visibleCategories = categoryConfig.filter((cat) =>
-    weeklyTrend.value.some((d) => (d as any)[cat.key] > 0)
+  const visibleCategories = trendCategories.filter((cat) =>
+    weeklyTrend.value.some((d) => cat.valueOf(d) > 0)
   )
 
   const seriesData = visibleCategories.map((cat) => {
-    const data = weeklyTrend.value.map((d) => (d as any)[cat.key] / 60)
+    const data = weeklyTrend.value.map((d) => cat.valueOf(d) / 60)
     return {
       name: cat.name,
       type: 'line',
@@ -447,7 +481,7 @@ function renderTrendChart() {
     },
     yAxis: {
       type: 'value',
-      name: '分钟',
+      name: t('statistics.minutes'),
       nameTextStyle: {
         color: '#808080',
         fontSize: 11,
@@ -480,7 +514,7 @@ function renderHourlyChart() {
     hourlyChart = echarts.init(hourlyChartRef.value)
   }
 
-  const weekDays = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
+  const weekDays = tm('statistics.weekdays') as string[]
   const hours = Array.from({ length: 24 }, (_, i) => `${i}:00`)
 
   // 构建 24小时 x 7天 的热力图数据
@@ -507,7 +541,7 @@ function renderHourlyChart() {
         const weekday = params.data[1]
         const seconds = params.data[2]
         return `<div style="font-weight: 600; margin-bottom: 4px;">${weekDays[weekday]} ${hour}:00 - ${hour + 1}:00</div>
-                <div>时长：${formatDuration(seconds)}</div>`
+                <div>${t('statistics.duration')}：${formatDuration(seconds)}</div>`
       },
     },
     grid: {
@@ -571,7 +605,7 @@ function renderHourlyChart() {
     },
     series: [
       {
-        name: '时段分布',
+        name: t('statistics.hourly'),
         type: 'heatmap',
         data: heatmapData,
         label: {
@@ -649,4 +683,6 @@ onUnmounted(() => {
 })
 
 watch(selectedDate, loadData)
+// 语言切换后图表内的文字（series 名、tooltip、坐标轴）需要重绘
+watch(locale, () => renderCharts())
 </script>

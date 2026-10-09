@@ -1,25 +1,29 @@
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, computed, markRaw } from "vue";
 import { useRoute, useRouter } from "vue-router";
+import { useI18n } from "vue-i18n";
 import { getCurrentWindow, LogicalPosition } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { hideMainWindow } from "./api";
+import { refreshGlobalShortcuts } from "./composables/useGlobalShortcuts";
 import { LayoutDashboard, PieChart, Filter, Settings, ChevronDown, Activity, BarChart3, Grid3x3 } from "lucide-vue-next";
 import { NConfigProvider, darkTheme } from "naive-ui";
+import GlassConfirm from "./components/GlassConfirm.vue";
 
 const route = useRoute();
 const router = useRouter();
 const win = getCurrentWindow();
+const { t } = useI18n();
 let unlistenMoved: (() => void) | null = null;
 
 const navItems = computed(() => [
-  { path: "/", title: "概览", icon: markRaw(LayoutDashboard) },
-  { path: "/categories", title: "分类统计", icon: markRaw(PieChart) },
-  { path: "/timeline", title: "时间轴", icon: markRaw(Activity) },
-  { path: "/statistics", title: "统计", icon: markRaw(BarChart3) },
-  { path: "/heatmap", title: "热力图", icon: markRaw(Grid3x3) },
-  { path: "/rules", title: "规则管理", icon: markRaw(Filter) },
-  { path: "/settings", title: "设置", icon: markRaw(Settings) },
+  { path: "/", title: t('nav.overview'), icon: markRaw(LayoutDashboard) },
+  { path: "/categories", title: t('nav.category'), icon: markRaw(PieChart) },
+  { path: "/timeline", title: t('nav.timeline'), icon: markRaw(Activity) },
+  { path: "/statistics", title: t('nav.statistics'), icon: markRaw(BarChart3) },
+  { path: "/heatmap", title: t('nav.heatmap'), icon: markRaw(Grid3x3) },
+  { path: "/rules", title: t('nav.rules'), icon: markRaw(Filter) },
+  { path: "/settings", title: t('nav.settings'), icon: markRaw(Settings) },
 ]);
 
 function navigate(path: string) {
@@ -51,9 +55,10 @@ async function restoreWindowPosition() {
 
 // Esc 键隐藏面板
 function handleKeydown(e: KeyboardEvent) {
-  if (e.key === "Escape") {
-    hideMainWindow();
-  }
+  if (e.key !== "Escape") return;
+  // 有弹窗打开时（新增/编辑/确认），Esc 不收起整个面板，避免弹窗还没处理完窗口就没了
+  if (document.querySelector(".modal-overlay, .gc-overlay")) return;
+  hideMainWindow();
 }
 
 onMounted(async () => {
@@ -86,6 +91,15 @@ onMounted(async () => {
 
   // Esc 键监听
   window.addEventListener("keydown", handleKeydown);
+
+  // 注册全局快捷键（默认 Ctrl+Shift+T 显示/隐藏主面板、Ctrl+Shift+P 开始/暂停番茄钟，
+  // 可在「设置 → 常规 → 快捷键」里修改）
+  const failed = await refreshGlobalShortcuts();
+  if (failed.length === 0) {
+    console.log("Global shortcuts registered");
+  } else {
+    console.warn("部分全局快捷键注册失败（可能被其它软件占用）：", failed.join(", "));
+  }
 });
 
 onBeforeUnmount(() => {
@@ -101,10 +115,10 @@ onBeforeUnmount(() => {
       <div class="title-bar">
         <div class="drag-region" data-tauri-drag-region>
           <span class="app-title">TimeSense</span>
-          <span class="page-title">{{ route.meta.title ?? "" }}</span>
+          <span class="page-title">{{ route.meta.title ? t(route.meta.title) : "" }}</span>
         </div>
         <div class="window-controls">
-          <button class="win-btn collapse" @click.stop="hideMainWindow" title="收起面板">
+          <button class="win-btn collapse" @click.stop="hideMainWindow" :title="t('common.collapse')">
             <ChevronDown :size="16" :stroke-width="2.2" />
           </button>
         </div>
@@ -134,6 +148,8 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </div>
+    <!-- 全局确认弹窗（替代浏览器原生 confirm） -->
+    <GlassConfirm />
   </div>
 </template>
 

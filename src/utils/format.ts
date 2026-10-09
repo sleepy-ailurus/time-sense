@@ -2,18 +2,25 @@
  * 时间格式化工具
  */
 
+import i18n from "../i18n";
+
 export function formatDuration(seconds: number): string {
+  const t = i18n.global.t.bind(i18n.global);
   if (seconds < 60) {
-    return `${seconds}秒`;
+    return t("common.durationSeconds", { n: seconds });
   }
   if (seconds < 3600) {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
-    return secs > 0 ? `${mins}分${secs}秒` : `${mins}分钟`;
+    return secs > 0
+      ? t("common.durationMinSec", { m: mins, s: secs })
+      : t("common.durationMinutes", { m: mins });
   }
   const hours = Math.floor(seconds / 3600);
   const mins = Math.floor((seconds % 3600) / 60);
-  return mins > 0 ? `${hours}h ${mins}m` : `${hours}小时`;
+  return mins > 0
+    ? t("common.durationHourMin", { h: hours, m: mins })
+    : t("common.durationHours", { h: hours });
 }
 
 /**

@@ -1,7 +1,11 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, markRaw } from "vue";
-import { getRules, getCategories, createRule, deleteRule, toggleRule, updateRule } from "../api";
+import { useI18n } from "vue-i18n";
+import { getRules, getCategories, createRule, deleteRule, toggleRule, updateRule, reorderRules } from "../api";
 import type { AppRule, Category, MatchMode, MatchType } from "../api/types";
+import { categoryLabel } from "../utils/categoryName";
+import GlassSelect from "../components/GlassSelect.vue";
+import { confirmDialog } from "../composables/useConfirm";
 import {
   Briefcase,
   BookOpen,
@@ -14,6 +18,8 @@ import {
   Power,
   Pencil,
   X,
+  ChevronUp,
+  ChevronDown,
 } from "lucide-vue-next";
 
 const iconMap: Record<string, any> = {
@@ -29,6 +35,8 @@ function getCategoryIcon(name?: string | null) {
   return iconMap[name || ""] || Folder;
 }
 
+const { t } = useI18n();
+
 const rules = ref<AppRule[]>([]);
 const categories = ref<Category[]>([]);
 const loading = ref(false);
@@ -41,6 +49,7 @@ const newRule = ref({
   matchType: "process" as MatchType,
   matchValue: "",
   matchMode: "contains" as MatchMode,
+  label: "",
 });
 
 const editRule = ref({
@@ -48,9 +57,31 @@ const editRule = ref({
   matchType: "process" as MatchType,
   matchValue: "",
   matchMode: "contains" as MatchMode,
+  label: "",
 });
 
 const filteredRules = computed(() => rules.value);
+
+// 下拉选项（跟随语言 / 分类列表变化）
+const matchModeOptions = computed(() => [
+  { value: "contains", label: t("rules.contains") },
+  { value: "exact", label: t("rules.exactMatch") },
+  { value: "regex", label: t("rules.regexMatch") },
+]);
+
+const categoryOptions = computed(() =>
+  categories.value.map((c) => ({ value: String(c.id), label: categoryLabel(c.name) })),
+);
+
+function setMatchMode(target: "new" | "edit", value: string) {
+  if (target === "new") newRule.value.matchMode = value as MatchMode;
+  else editRule.value.matchMode = value as MatchMode;
+}
+
+function setCategoryId(target: "new" | "edit", value: string) {
+  if (target === "new") newRule.value.categoryId = Number(value);
+  else editRule.value.categoryId = Number(value);
+}
 
 async function loadData() {
   loading.value = true;
@@ -79,8 +110,10 @@ async function handleAddRule() {
       matchType: newRule.value.matchType,
       matchValue: newRule.value.matchValue.trim(),
       matchMode: newRule.value.matchMode,
+      label: newRule.value.label.trim() || null,
     });
     newRule.value.matchValue = "";
+    newRule.value.label = "";
     showAddModal.value = false;
     await loadData();
   } catch (e) {
@@ -104,6 +137,7 @@ function handleEdit(rule: AppRule) {
     matchType: rule.matchType,
     matchValue: rule.matchValue,
     matchMode: rule.matchMode,
+    label: rule.label || "",
   };
   showEditModal.value = true;
 }
@@ -111,7 +145,13 @@ function handleEdit(rule: AppRule) {
 async function handleSaveEdit() {
   if (editingId.value === null) return;
   try {
-    await updateRule(editingId.value, editRule.value);
+    await updateRule(editingId.value, {
+      categoryId: editRule.value.categoryId,
+      matchType: editRule.value.matchType,
+      matchValue: editRule.value.matchValue.trim(),
+      matchMode: editRule.value.matchMode,
+      label: editRule.value.label.trim() || null,
+    });
     showEditModal.value = false;
     editingId.value = null;
     await loadData();
@@ -120,21 +160,19 @@ async function handleSaveEdit() {
   }
 }
 
-const deletingId = ref<number | null>(null);
 
-function requestDelete(id: number) {
-  deletingId.value = id;
-}
-
-async function confirmDelete() {
-  if (deletingId.value === null) return;
+async function requestDelete(id: number) {
+  const ok = await confirmDialog({
+    title: t("rules.deleteRule"),
+    message: t("rules.deleteConfirm"),
+    confirmText: t("common.delete"),
+  });
+  if (!ok) return;
   try {
-    await deleteRule(deletingId.value);
+    await deleteRule(id);
     await loadData();
   } catch (e) {
     console.error("删除规则失败", e);
-  } finally {
-    deletingId.value = null;
   }
 }
 
@@ -143,23 +181,47 @@ function getCategoryColor(catId: number): string {
 }
 
 function getCategoryName(catId: number): string {
-  return categories.value.find((c) => c.id === catId)?.name || "未知";
+  return categories.value.find((c) => c.id === catId)?.name || t("common.unknown");
 }
 
 function getMatchTypeLabel(type: string): string {
-  return type === "process" ? "进程名" : "窗口标题";
+  return type === "process" ? t("rules.process") : t("rules.windowTitle");
 }
 
 function getMatchModeLabel(mode: string): string {
   switch (mode) {
     case "exact":
-      return "精确";
+      return t("rules.exact");
     case "contains":
-      return "包含";
+      return t("rules.contains");
     case "regex":
-      return "正则";
+      return t("rules.regex");
     default:
       return mode;
+  }
+}
+
+async function moveRuleUp(index: number) {
+  if (index <= 0) return;
+  const ids = filteredRules.value.map((r) => r.id);
+  [ids[index - 1], ids[index]] = [ids[index], ids[index - 1]];
+  try {
+    await reorderRules(ids);
+    await loadData();
+  } catch (e) {
+    console.error("移动规则失败", e);
+  }
+}
+
+async function moveRuleDown(index: number) {
+  if (index >= filteredRules.value.length - 1) return;
+  const ids = filteredRules.value.map((r) => r.id);
+  [ids[index], ids[index + 1]] = [ids[index + 1], ids[index]];
+  try {
+    await reorderRules(ids);
+    await loadData();
+  } catch (e) {
+    console.error("移动规则失败", e);
   }
 }
 
@@ -172,19 +234,19 @@ onMounted(() => {
   <div class="rules-page">
     <div class="page-header">
       <div>
-        <h2 class="page-title">规则管理</h2>
-        <p class="page-subtitle">共 {{ rules.length }} 条规则</p>
+        <h2 class="page-title">{{ t('rules.title') }}</h2>
+        <p class="page-subtitle">{{ t('rules.total', { count: rules.length }) }}</p>
       </div>
       <button class="btn-primary" @click="showAddModal = true">
-        <span>+</span> 新增规则
+        <span>+</span> {{ t('rules.addRule') }}
       </button>
     </div>
 
-    <div v-if="loading" class="loading">加载中...</div>
+    <div v-if="loading" class="loading">{{ t('common.loading') }}</div>
 
     <div v-else class="rules-list">
       <div
-        v-for="rule in filteredRules"
+        v-for="(rule, index) in filteredRules"
         :key="rule.id"
         class="rule-item"
         :class="{ disabled: !rule.enabled }"
@@ -199,17 +261,23 @@ onMounted(() => {
             class="cat-tag"
             :style="{ background: getCategoryColor(rule.categoryId) + '33', color: getCategoryColor(rule.categoryId) }"
           >
-            {{ rule.categoryName || getCategoryName(rule.categoryId) }}
+            {{ categoryLabel(rule.categoryName || getCategoryName(rule.categoryId)) }}
           </span>
         </div>
         <div class="rule-actions">
-          <button class="action-btn edit" @click="handleEdit(rule)" title="编辑">
+          <button class="action-btn move" @click="moveRuleUp(index)" :disabled="index === 0" :title="t('common.moveUp')">
+            <ChevronUp :size="14" :stroke-width="1.8" />
+          </button>
+          <button class="action-btn move" @click="moveRuleDown(index)" :disabled="index === filteredRules.length - 1" :title="t('common.moveDown')">
+            <ChevronDown :size="14" :stroke-width="1.8" />
+          </button>
+          <button class="action-btn edit" @click="handleEdit(rule)" :title="t('rules.edit')">
             <Pencil :size="14" :stroke-width="1.8" />
           </button>
           <button class="action-btn toggle" @click="handleToggle(rule.id)">
-            {{ rule.enabled ? "停用" : "启用" }}
+            {{ rule.enabled ? t('rules.disable') : t('rules.enable') }}
           </button>
-          <button class="action-btn delete" @click="requestDelete(rule.id)" title="删除">
+          <button class="action-btn delete" @click="requestDelete(rule.id)" :title="t('rules.delete')">
             <Trash2 :size="14" :stroke-width="1.8" />
           </button>
         </div>
@@ -217,120 +285,133 @@ onMounted(() => {
     </div>
 
     <!-- 新增规则弹窗 -->
-    <div v-if="showAddModal" class="modal-overlay" @click.self="showAddModal = false">
+    <div v-if="showAddModal" class="modal-overlay">
       <div class="modal-content">
-        <h3 class="modal-title">新增规则</h3>
+        <h3 class="modal-title">{{ t('rules.addRule') }}</h3>
 
         <div class="form-group">
-          <label>匹配类型</label>
+          <label>{{ t('rules.matchType') }}</label>
           <div class="radio-group">
             <label class="radio-item">
               <input type="radio" v-model="newRule.matchType" value="process" />
-              <span class="radio-label">进程名</span>
+              <span class="radio-label">{{ t('rules.process') }}</span>
             </label>
             <label class="radio-item">
               <input type="radio" v-model="newRule.matchType" value="title" />
-              <span class="radio-label">窗口标题</span>
+              <span class="radio-label">{{ t('rules.windowTitle') }}</span>
             </label>
           </div>
         </div>
 
         <div class="form-group">
-          <label>匹配方式</label>
-          <select v-model="newRule.matchMode" class="form-select">
-            <option value="contains">包含</option>
-            <option value="exact">精确匹配</option>
-            <option value="regex">正则表达式</option>
-          </select>
-        </div>
-
-        <div class="form-group">
-          <label>匹配值</label>
-          <input
-            v-model="newRule.matchValue"
-            type="text"
-            class="form-input"
-            placeholder="如：Code.exe 或 掘金"
+          <label>{{ t('rules.matchMode') }}</label>
+          <GlassSelect
+            :model-value="newRule.matchMode"
+            :options="matchModeOptions"
+            block
+            @update:model-value="(v) => setMatchMode('new', v)"
           />
         </div>
 
         <div class="form-group">
-          <label>归属分类</label>
-          <select v-model="newRule.categoryId" class="form-select">
-            <option v-for="cat in categories" :key="cat.id" :value="cat.id">
-              {{ cat.name }}
-            </option>
-          </select>
+          <label>{{ t('rules.matchValue') }}</label>
+          <input
+            v-model="newRule.matchValue"
+            type="text"
+            class="form-input"
+            :placeholder="t('rules.matchValuePlaceholder')"
+          />
+        </div>
+
+        <div class="form-group">
+          <label>{{ t('rules.displayName') }}</label>
+          <input
+            v-model="newRule.label"
+            type="text"
+            class="form-input"
+            :placeholder="t('rules.displayNameHint')"
+          />
+        </div>
+
+        <div class="form-group">
+          <label>{{ t('rules.assignCategory') }}</label>
+          <GlassSelect
+            :model-value="String(newRule.categoryId)"
+            :options="categoryOptions"
+            block
+            @update:model-value="(v) => setCategoryId('new', v)"
+          />
         </div>
 
         <div class="modal-actions">
-          <button class="btn-secondary" @click="showAddModal = false">取消</button>
-          <button class="btn-primary" @click="handleAddRule">添加</button>
+          <button class="btn-secondary" @click="showAddModal = false">{{ t('common.cancel') }}</button>
+          <button class="btn-primary" @click="handleAddRule">{{ t('common.add') }}</button>
         </div>
       </div>
     </div>
 
     <!-- 编辑规则弹窗 -->
-    <div v-if="showEditModal" class="modal-overlay" @click.self="showEditModal = false">
+    <div v-if="showEditModal" class="modal-overlay">
       <div class="modal-content">
-        <h3 class="modal-title">编辑规则</h3>
+        <h3 class="modal-title">{{ t('rules.editRule') }}</h3>
 
         <div class="form-group">
-          <label>匹配类型</label>
+          <label>{{ t('rules.matchType') }}</label>
           <div class="radio-group">
             <label class="radio-item">
               <input type="radio" v-model="editRule.matchType" value="process" />
-              <span class="radio-label">进程名</span>
+              <span class="radio-label">{{ t('rules.process') }}</span>
             </label>
             <label class="radio-item">
               <input type="radio" v-model="editRule.matchType" value="title" />
-              <span class="radio-label">窗口标题</span>
+              <span class="radio-label">{{ t('rules.windowTitle') }}</span>
             </label>
           </div>
         </div>
 
         <div class="form-group">
-          <label>匹配方式</label>
-          <select v-model="editRule.matchMode" class="form-select">
-            <option value="contains">包含</option>
-            <option value="exact">精确匹配</option>
-            <option value="regex">正则表达式</option>
-          </select>
-        </div>
-
-        <div class="form-group">
-          <label>匹配值</label>
-          <input
-            v-model="editRule.matchValue"
-            type="text"
-            class="form-input"
-            placeholder="如：Code.exe 或 掘金"
+          <label>{{ t('rules.matchMode') }}</label>
+          <GlassSelect
+            :model-value="editRule.matchMode"
+            :options="matchModeOptions"
+            block
+            @update:model-value="(v) => setMatchMode('edit', v)"
           />
         </div>
 
         <div class="form-group">
-          <label>归属分类</label>
-          <select v-model="editRule.categoryId" class="form-select">
-            <option v-for="cat in categories" :key="cat.id" :value="cat.id">
-              {{ cat.name }}
-            </option>
-          </select>
+          <label>{{ t('rules.matchValue') }}</label>
+          <input
+            v-model="editRule.matchValue"
+            type="text"
+            class="form-input"
+            :placeholder="t('rules.matchValuePlaceholder')"
+          />
+        </div>
+
+        <div class="form-group">
+          <label>{{ t('rules.displayName') }}</label>
+          <input
+            v-model="editRule.label"
+            type="text"
+            class="form-input"
+            :placeholder="t('rules.displayNameHint')"
+          />
+        </div>
+
+        <div class="form-group">
+          <label>{{ t('rules.assignCategory') }}</label>
+          <GlassSelect
+            :model-value="String(editRule.categoryId)"
+            :options="categoryOptions"
+            block
+            @update:model-value="(v) => setCategoryId('edit', v)"
+          />
         </div>
 
         <div class="modal-actions">
-          <button class="btn-secondary" @click="showEditModal = false">取消</button>
-          <button class="btn-primary" @click="handleSaveEdit">保存</button>
-        </div>
-      </div>
-    </div>
-    <!-- 删除确认弹窗 -->
-    <div v-if="deletingId !== null" class="modal-overlay" @click.self="deletingId = null">
-      <div class="modal-content">
-        <h3 class="modal-title">删除规则</h3>
-        <p class="confirm-text">确定要删除这条规则吗？删除后对应活动将不再按此规则归类。</p>
-        <div class="modal-actions">
-          <button class="btn-secondary" @click="deletingId = null">取消</button>
-          <button class="btn-danger" @click="confirmDelete">删除</button>
+          <button class="btn-secondary" @click="showEditModal = false">{{ t('common.cancel') }}</button>
+          <button class="btn-primary" @click="handleSaveEdit">{{ t('common.save') }}</button>
         </div>
       </div>
     </div>
@@ -373,6 +454,7 @@ onMounted(() => {
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
+  box-shadow: 0 4px 14px rgba(139, 92, 246, 0.3);
   transition: all 0.2s ease;
   display: flex;
   align-items: center;
@@ -381,12 +463,12 @@ onMounted(() => {
 
 .btn-primary:hover {
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(139, 92, 246, 0.4);
+  box-shadow: 0 6px 18px rgba(139, 92, 246, 0.5);
 }
 
 .btn-secondary {
-  padding: 8px 14px;
-  background: rgba(255, 255, 255, 0.08);
+  padding: 8px 16px;
+  background: var(--bg-card);
   color: var(--text-secondary);
   border: 1px solid var(--border-glass);
   border-radius: 8px;
@@ -396,7 +478,8 @@ onMounted(() => {
 }
 
 .btn-secondary:hover {
-  background: rgba(255, 255, 255, 0.12);
+  background: var(--bg-card-hover);
+  border-color: var(--border-glass-strong);
   color: var(--text-primary);
 }
 
@@ -522,6 +605,22 @@ onMounted(() => {
   border-color: rgba(239, 68, 68, 0.3);
 }
 
+.action-btn.move {
+  width: 26px;
+  padding: 0;
+  color: var(--text-tertiary);
+}
+
+.action-btn.move:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.action-btn.move:not(:disabled):hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+}
+
 .action-btn.edit:hover {
   background: rgba(59, 130, 246, 0.15);
   color: #60a5fa;
@@ -531,12 +630,10 @@ onMounted(() => {
 /* 弹窗 */
 .modal-overlay {
   position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.6);
-  backdrop-filter: blur(4px);
+  inset: 0;
+  background: rgba(8, 10, 18, 0.38);
+  backdrop-filter: blur(8px) saturate(120%);
+  -webkit-backdrop-filter: blur(8px) saturate(120%);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -544,23 +641,73 @@ onMounted(() => {
 }
 
 .modal-content {
+  position: relative;
   width: 320px;
   background: var(--bg-glass);
-  backdrop-filter: blur(50px) saturate(200%);
+  backdrop-filter: blur(60px) saturate(190%);
+  -webkit-backdrop-filter: blur(60px) saturate(190%);
   border: 1px solid var(--border-glass-strong);
-  border-radius: 14px;
-  padding: 20px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+  border-radius: var(--radius-lg);
+  padding: 22px 20px 18px;
+  box-shadow: var(--shadow-glass), 0 0 0 1px rgba(139, 92, 246, 0.08);
+  overflow: hidden;
+}
+
+/* 顶部高光，跟主面板保持同一套玻璃质感 */
+.modal-content::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.28) 50%,
+    transparent 100%
+  );
+  pointer-events: none;
+}
+
+/* 左上角紫色柔光，呼应主面板卡片的 glow-orb */
+.modal-content::after {
+  content: "";
+  position: absolute;
+  top: -70px;
+  left: -50px;
+  width: 190px;
+  height: 190px;
+  background: radial-gradient(circle, rgba(139, 92, 246, 0.3) 0%, transparent 70%);
+  pointer-events: none;
 }
 
 .modal-title {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 16px;
   font-weight: 600;
   color: var(--text-primary);
   margin: 0 0 16px 0;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-glass);
+}
+
+/* 标题前的渐变小竖条，跟侧边栏选中态、主按钮同一套配色 */
+.modal-title::before {
+  content: "";
+  width: 3px;
+  height: 14px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #8b5cf6, #ec4899);
 }
 
 .form-group {
+  position: relative;
+  z-index: 1;
   margin-bottom: 14px;
 }
 
@@ -572,29 +719,27 @@ onMounted(() => {
   margin-bottom: 6px;
 }
 
-.form-input,
-.form-select {
+.form-input {
   width: 100%;
-  padding: 8px 10px;
-  background: rgba(255, 255, 255, 0.06);
+  padding: 9px 12px;
+  background: var(--bg-card);
   border: 1px solid var(--border-glass);
   border-radius: 8px;
   color: var(--text-primary);
   font-size: 13px;
   outline: none;
-  transition: all 0.15s ease;
+  transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
   box-sizing: border-box;
 }
 
-.form-select option {
-  background: #1e1b2e;
-  color: #e5e7eb;
+.form-input:hover {
+  background: var(--bg-card-hover);
 }
 
-.form-input:focus,
-.form-select:focus {
-  border-color: rgba(139, 92, 246, 0.5);
-  background: rgba(255, 255, 255, 0.08);
+.form-input:focus {
+  border-color: rgba(139, 92, 246, 0.55);
+  background: var(--bg-card-hover);
+  box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.15);
 }
 
 .radio-group {
@@ -627,13 +772,17 @@ onMounted(() => {
 }
 
 .modal-actions {
+  position: relative;
+  z-index: 1;
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
+  gap: 10px;
   margin-top: 20px;
 }
 
 .confirm-text {
+  position: relative;
+  z-index: 1;
   font-size: 13px;
   color: var(--text-secondary);
   line-height: 1.6;
@@ -641,7 +790,7 @@ onMounted(() => {
 }
 
 .btn-danger {
-  padding: 8px 14px;
+  padding: 8px 16px;
   background: linear-gradient(135deg, #ef4444, #dc2626);
   color: white;
   border: none;
@@ -649,10 +798,12 @@ onMounted(() => {
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
+  box-shadow: 0 4px 14px rgba(239, 68, 68, 0.25);
   transition: all 0.2s ease;
 }
 
 .btn-danger:hover {
-  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.4);
+  box-shadow: 0 6px 18px rgba(239, 68, 68, 0.45);
+  transform: translateY(-1px);
 }
 </style>

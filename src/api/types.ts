@@ -10,6 +10,8 @@ export interface ActivityLog {
   duration: number;
   isIdle: boolean;
   categoryId?: number | null;
+  /** 站点标签（title 规则命中时记录，如「抖音」） */
+  siteLabel?: string | null;
 }
 
 /**
@@ -53,6 +55,8 @@ export interface CurrentActivity {
   isIdle: boolean;
   categoryId?: number | null;
   categoryName?: string | null;
+  /** 站点标签（当前活动命中 title 规则时的展示名，如「B站」） */
+  siteLabel?: string | null;
 }
 
 // ==================== 分类 ====================
@@ -64,6 +68,8 @@ export interface Category {
   icon?: string | null;
   sortOrder: number;
   isDefault: boolean;
+  /** 是否计入「专注时长」（热力图 / 连续天数） */
+  isFocus?: boolean;
 }
 
 export interface CategoryStat {
@@ -87,6 +93,8 @@ export interface AppRule {
   matchType: MatchType;
   matchValue: string;
   matchMode: MatchMode;
+  /** 显示名：title 规则命中时统计展示用（如 bilibili → B站） */
+  label?: string | null;
   sortOrder: number;
   enabled: boolean;
 }
@@ -96,6 +104,8 @@ export interface NewAppRule {
   matchType: MatchType;
   matchValue: string;
   matchMode: MatchMode;
+  /** 显示名（可选）：title 规则命中时统计展示用；传 null/省略表示不聚合 */
+  label?: string | null;
 }
 
 // ==================== 统计 ====================
@@ -112,8 +122,18 @@ export interface DailySummary {
   entertainmentSeconds: number
   socialSeconds: number
   otherSeconds: number
+  /** 各分类明细（含用户自建分类；未分类并入「其他」） */
+  categorySeconds?: CategorySlice[]
   pomodoroCount: number
   pomodoroSeconds: number
+}
+
+/** 单日某个分类的活跃时长 */
+export interface CategorySlice {
+  categoryId: number
+  categoryName: string
+  categoryColor: string
+  seconds: number
 }
 
 /**
@@ -133,6 +153,30 @@ export interface HourlyStat {
   totalSeconds: number
   weekday: number  // 0=周一, 6=周日
   date: string
+}
+
+// ==================== 目标预算 ====================
+
+export interface Goal {
+  id: number;
+  categoryId: number;
+  categoryName?: string | null;
+  categoryColor?: string | null;
+  dailyLimitMinutes: number;
+  enabled: boolean;
+}
+
+export interface NewGoal {
+  categoryId: number;
+  dailyLimitMinutes: number;
+  enabled?: boolean;
+}
+
+export interface GoalStatus {
+  goal: Goal;
+  usedSeconds: number;
+  limitSeconds: number;
+  exceeded: boolean;
 }
 
 // ==================== 番茄钟 ====================
@@ -172,4 +216,8 @@ export interface GeneralSettings {
   autoStart: boolean;
   notificationEnabled: boolean;
   idleThresholdMinutes: number;
+  /** 全局快捷键：显示/隐藏主面板（空字符串表示不注册） */
+  shortcutToggleWindow?: string;
+  /** 全局快捷键：开始/暂停番茄钟（空字符串表示不注册） */
+  shortcutTogglePomodoro?: string;
 }

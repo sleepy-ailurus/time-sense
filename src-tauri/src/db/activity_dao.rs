@@ -10,9 +10,9 @@ impl ActivityDao {
     /// 插入一条活动记录
     pub fn insert(conn: &Connection, log: &ActivityLog) -> Result<i64> {
         conn.execute(
-            "INSERT INTO activity_logs 
-             (process_name, window_title, start_time, end_time, duration, is_idle, category_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO activity_logs
+             (process_name, window_title, start_time, end_time, duration, is_idle, category_id, site_label)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 log.process_name,
                 log.window_title,
@@ -21,6 +21,7 @@ impl ActivityDao {
                 log.duration,
                 log.is_idle as i32,
                 log.category_id,
+                log.site_label,
             ],
         )?;
         Ok(conn.last_insert_rowid())
@@ -52,14 +53,16 @@ impl ActivityDao {
             |row| row.get(0),
         )?;
 
-        // 按进程分组统计，关联分类
+        // 按展示名分组统计，关联分类：
+        // 命中 title 规则且带站点标签的活动按站点名聚合（如「抖音」），其余按进程名
         let mut stmt = conn.prepare(
-            "SELECT al.process_name, SUM(al.duration) as total,
+            "SELECT COALESCE(NULLIF(al.site_label, ''), al.process_name) as display_name,
+                    SUM(al.duration) as total,
                     c.id, c.name, c.color
              FROM activity_logs al
              LEFT JOIN categories c ON al.category_id = c.id
              WHERE al.start_time >= ?1 AND al.start_time < ?2 AND al.is_idle = 0
-             GROUP BY al.process_name
+             GROUP BY display_name
              ORDER BY total DESC",
         )?;
 
@@ -129,7 +132,7 @@ impl ActivityDao {
         let (start_ts, end_ts) = date_timestamp_range(date)?;
 
         let mut stmt = conn.prepare(
-            "SELECT id, process_name, window_title, start_time, end_time, duration, is_idle, category_id
+            "SELECT id, process_name, window_title, start_time, end_time, duration, is_idle, category_id, site_label
              FROM activity_logs
              WHERE start_time >= ?1 AND start_time < ?2
              ORDER BY start_time ASC",
@@ -146,6 +149,7 @@ impl ActivityDao {
                 duration: row.get(5)?,
                 is_idle: is_idle_int == 1,
                 category_id: row.get(7)?,
+                site_label: row.get(8)?,
             })
         })?;
 

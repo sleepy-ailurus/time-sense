@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, defineAsyncComponent, markRaw, watch } from "vue";
+import { useI18n } from "vue-i18n";
 import { formatDuration } from "../utils/format";
+import { categoryLabel } from "../utils/categoryName";
 import {
   anchorTimeline,
   createTimeline,
@@ -11,6 +13,8 @@ import {
   remainingMs,
 } from "../utils/pomodoroTimer";
 import { useActivity } from "../composables/useActivity";
+
+const { t } = useI18n();
 import { listen } from "@tauri-apps/api/event";
 import {
   getTodayCategoryStats,
@@ -20,8 +24,9 @@ import {
   pausePomodoro,
   resumePomodoro,
   skipPomodoro,
+  getGoalsStatus,
 } from "../api";
-import type { CategoryStat, PomodoroStatus } from "../api/types";
+import type { CategoryStat, PomodoroStatus, GoalStatus } from "../api/types";
 import {
   Timer,
   Clock,
@@ -59,6 +64,7 @@ const {
 
 const categoryStats = ref<CategoryStat[]>([]);
 const pomodoroStatus = ref<PomodoroStatus | null>(null);
+const goalsStatus = ref<GoalStatus[]>([]);
 const refreshTimer = ref<number | null>(null);
 const isRefreshing = ref(false);
 
@@ -102,14 +108,14 @@ const pomodoroTimeDisplay = computed(() => {
 });
 
 const pomodoroPhaseLabel = computed(() => {
-  if (!pomodoroStatus.value?.isRunning) return "未开始";
+  if (!pomodoroStatus.value?.isRunning) return t('dashboard.notStarted');
   switch (pomodoroStatus.value.sessionType) {
     case "focus":
-      return "专注中";
+      return t('dashboard.focusing');
     case "short_break":
-      return "短休息";
+      return t('dashboard.shortBreak');
     case "long_break":
-      return "长休息";
+      return t('dashboard.longBreak');
     default:
       return "";
   }
@@ -152,6 +158,36 @@ const currentDurationLive = computed(() => {
   if (!act) return 0;
   const elapsedLocal = Math.floor((tickNow.value - activityBaselineAt) / 1000);
   return activityBaselineDuration + elapsedLocal;
+});
+
+// 当前空闲会话实时时长（从进入空闲状态开始算）
+const idleDurationLive = computed(() => {
+  const act = currentActivity.value;
+  if (!act || !act.isIdle) return 0;
+  const elapsedLocal = Math.floor((tickNow.value - activityBaselineAt) / 1000);
+  return activityBaselineDuration + elapsedLocal;
+});
+
+// 窗口标题：只有「比应用名多出信息」时才作为副标题展示。
+// 例如 chrome.exe → 「某页面 - Google Chrome」要显示；
+// timeSense.exe → 「TimeSense」和进程名重复，就不显示（避免重复一行）。
+const currentWindowTitle = computed(() => {
+  const act = currentActivity.value;
+  if (!act) return "";
+
+  const title = (act.windowTitle || "").trim();
+  if (!title || title === "—" || title === "-") return "";
+
+  const normalize = (s: string) => s.replace(/\s+/g, "").toLowerCase();
+  const compactTitle = normalize(title);
+  const names = [act.siteLabel || "", act.processName || ""]
+    .map((n) => normalize(n.replace(/\.exe$/i, "")))
+    .filter(Boolean);
+
+  // 标题去空格后与应用名（或去掉 .exe 的进程名）完全相同 → 没有额外信息
+  if (names.includes(compactTitle)) return "";
+
+  return title;
 });
 
 // 番茄钟状态变化时，更新本地计时基准
@@ -264,6 +300,14 @@ async function fetchPomodoroStatus() {
   }
 }
 
+async function fetchGoalsStatus() {
+  try {
+    goalsStatus.value = await getGoalsStatus();
+  } catch (e) {
+    console.error("加载目标状态失败", e);
+  }
+}
+
 async function handleRefresh() {
   if (isRefreshing.value) return;
   isRefreshing.value = true;
@@ -273,6 +317,7 @@ async function handleRefresh() {
       fetchCurrentActivity(),
       fetchCategoryStats(),
       fetchPomodoroStatus(),
+      fetchGoalsStatus(),
     ]);
   } finally {
     setTimeout(() => {
@@ -311,12 +356,15 @@ function handleSkipPomodoro() {
 
 let unlistenPomodoro: (() => void) | null = null;
 let pomodoroListenDisposed = false;
+let unlistenActivity: (() => void) | null = null;
+let activityListenDisposed = false;
 
 onMounted(() => {
   fetchTodayStats();
   fetchCurrentActivity();
   fetchCategoryStats();
   fetchPomodoroStatus();
+  fetchGoalsStatus();
 
   // 每 10 秒自动刷新后端数据
   refreshTimer.value = window.setInterval(() => {
@@ -324,6 +372,7 @@ onMounted(() => {
     fetchCurrentActivity();
     fetchCategoryStats();
     fetchPomodoroStatus();
+    fetchGoalsStatus();
   }, 10000);
 
   // 本地秒级计时器，驱动「当前活动时长」实时刷新
@@ -348,11 +397,24 @@ onMounted(() => {
       unlistenPomodoro = unlisten;
     }
   });
+
+  // 当前活动切换（进入/离开空闲、换窗口）时立刻刷新，不必等 10 秒轮询
+  listen("activity://changed", () => {
+    fetchCurrentActivity();
+  }).then((unlisten) => {
+    if (activityListenDisposed) {
+      unlisten();
+    } else {
+      unlistenActivity = unlisten;
+    }
+  });
 });
 
 onUnmounted(() => {
   pomodoroListenDisposed = true;
   unlistenPomodoro?.();
+  activityListenDisposed = true;
+  unlistenActivity?.();
   if (refreshTimer.value) {
     clearInterval(refreshTimer.value);
   }
@@ -373,7 +435,7 @@ onUnmounted(() => {
     <div class="left-col">
       <!-- 总时长卡片 -->
       <div class="card total-card">
-        <div class="card-label">今日活跃时长</div>
+        <div class="card-label">{{ t('dashboard.todayActive') }}</div>
         <div class="total-time">
           <span class="hours">{{ Math.floor(todayTotal.activeSeconds / 3600) }}</span>
           <span class="unit">h</span>
@@ -381,7 +443,7 @@ onUnmounted(() => {
           <span class="unit">m</span>
         </div>
         <div class="total-sub">
-          <span class="idle-time">空闲 {{ formatDuration(todayTotal.idleSeconds) }}</span>
+          <span class="idle-time">{{ t('dashboard.idle') }} {{ formatDuration(todayTotal.idleSeconds) }}</span>
         </div>
         <div class="glow-orb"></div>
       </div>
@@ -390,7 +452,7 @@ onUnmounted(() => {
       <div class="card pomodoro-card" :style="{ '--pom-color': pomodoroPhaseColor }">
         <div class="pomodoro-header">
           <Timer class="pomodoro-icon" :size="18" :stroke-width="1.8" />
-          <span class="pomodoro-title">番茄钟</span>
+          <span class="pomodoro-title">{{ t('dashboard.pomodoro') }}</span>
           <span class="pomodoro-phase" v-if="pomodoroStatus?.isRunning">
             {{ pomodoroPhaseLabel }}
           </span>
@@ -412,7 +474,7 @@ onUnmounted(() => {
           <div class="timer-text">
             <div class="timer-time">{{ pomodoroTimeDisplay }}</div>
             <div class="timer-count">
-              今日 {{ pomodoroStatus?.todayFocusCount || 0 }} 个
+              {{ t('dashboard.focusCount', { count: pomodoroStatus?.todayFocusCount || 0 }) }}
             </div>
           </div>
         </div>
@@ -423,16 +485,16 @@ onUnmounted(() => {
             class="pom-btn start"
             @click="handleStartPomodoro"
           >
-            开始专注
+            {{ t('dashboard.startFocus') }}
           </button>
           <template v-else-if="pomodoroStatus?.isPaused">
-            <button class="pom-btn resume" @click="handleResumePomodoro">继续</button>
-            <button class="pom-btn stop" @click="handleStopPomodoro">停止</button>
+            <button class="pom-btn resume" @click="handleResumePomodoro">{{ t('dashboard.resume') }}</button>
+            <button class="pom-btn stop" @click="handleStopPomodoro">{{ t('dashboard.stop') }}</button>
           </template>
           <template v-else>
-            <button class="pom-btn pause" @click="handlePausePomodoro">暂停</button>
-            <button class="pom-btn skip" @click="handleSkipPomodoro">跳过</button>
-            <button class="pom-btn stop" @click="handleStopPomodoro">停止</button>
+            <button class="pom-btn pause" @click="handlePausePomodoro">{{ t('dashboard.pause') }}</button>
+            <button class="pom-btn skip" @click="handleSkipPomodoro">{{ t('dashboard.skip') }}</button>
+            <button class="pom-btn stop" @click="handleStopPomodoro">{{ t('dashboard.stop') }}</button>
           </template>
         </div>
       </div>
@@ -441,15 +503,59 @@ onUnmounted(() => {
       <div class="card current-card" v-if="currentActivity">
         <div class="current-label">
           <span class="dot" :class="{ idle: currentActivity.isIdle }"></span>
-          {{ currentActivity.isIdle ? "空闲中" : "当前活动" }}
+          {{ currentActivity.isIdle ? t('dashboard.idleStatus') : t('dashboard.currentActivity') }}
         </div>
-        <div class="current-name">{{ currentActivity.processName }}</div>
-        <div class="current-title">{{ currentActivity.windowTitle || "—" }}</div>
-        <div class="current-duration">
-          {{ formatDuration(currentDurationLive) }}
-          <span v-if="currentActivity.categoryName" class="current-cat">
-            · {{ currentActivity.categoryName }}
+        <!-- 应用名与它已持续的时间同一行（时长靠右）；标题只在有额外信息时作为副标题显示 -->
+        <div class="current-head">
+          <span class="current-name" :title="currentActivity.windowTitle || ''">
+            {{ currentActivity.siteLabel || currentActivity.processName }}
           </span>
+          <span class="current-duration">
+            {{ formatDuration(currentDurationLive) }}
+            <span v-if="currentActivity.categoryName" class="current-cat">
+              · {{ categoryLabel(currentActivity.categoryName) }}
+            </span>
+          </span>
+        </div>
+        <div v-if="currentWindowTitle" class="current-title" :title="currentWindowTitle">
+          {{ currentWindowTitle }}
+        </div>
+        <div v-if="currentActivity.isIdle" class="current-idle">
+          {{ t('dashboard.idleFor', { duration: formatDuration(idleDurationLive) }) }}
+        </div>
+      </div>
+
+      <!-- 目标预算 -->
+      <div class="card goals-card" v-if="goalsStatus.length > 0">
+        <div class="card-header">
+          <span class="card-title">{{ t('dashboard.todayBudget') }}</span>
+        </div>
+        <div class="goals-list">
+          <div
+            v-for="gs in goalsStatus"
+            :key="gs.goal.id"
+            class="goal-item"
+          >
+            <div class="goal-info">
+              <span class="goal-cat" :style="{ color: gs.goal.categoryColor || '#6B7280' }">
+                {{ gs.goal.categoryName ? categoryLabel(gs.goal.categoryName) : t('common.unknown') }}
+              </span>
+              <span class="goal-usage" :class="{ exceeded: gs.exceeded }">
+                {{ formatDuration(gs.usedSeconds) }} / {{ formatDuration(gs.limitSeconds) }}
+              </span>
+            </div>
+            <div class="goal-bar">
+              <div
+                class="goal-fill"
+                :style="{
+                  width: Math.min((gs.usedSeconds / gs.limitSeconds) * 100, 100) + '%',
+                  background: gs.exceeded
+                    ? 'linear-gradient(90deg, #ef4444, #dc2626)'
+                    : `linear-gradient(90deg, ${gs.goal.categoryColor || '#8B5CF6'}88, ${gs.goal.categoryColor || '#8B5CF6'})`,
+                }"
+              ></div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -459,7 +565,7 @@ onUnmounted(() => {
       <!-- 应用排行 -->
       <div class="card apps-card">
         <div class="card-header">
-          <span class="card-title">应用耗时排行</span>
+          <span class="card-title">{{ t('dashboard.appRanking') }}</span>
           <button class="refresh-btn" @click="handleRefresh" :class="{ spinning: isRefreshing }">
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
               <path
@@ -475,7 +581,7 @@ onUnmounted(() => {
 
         <div v-if="todayStats.length === 0" class="empty-state">
           <div class="empty-icon">⏱️</div>
-          <div class="empty-text">暂无数据</div>
+          <div class="empty-text">{{ t('dashboard.noData') }}</div>
         </div>
 
         <div v-else class="app-list">
@@ -507,11 +613,11 @@ onUnmounted(() => {
       <!-- 分类排行 -->
       <div class="card categories-card">
         <div class="card-header">
-          <span class="card-title">分类统计</span>
+          <span class="card-title">{{ t('dashboard.categoryStats') }}</span>
         </div>
 
         <div v-if="categoryStats.length === 0" class="empty-state small">
-          <div class="empty-text">暂无分类数据</div>
+          <div class="empty-text">{{ t('dashboard.noCategoryData') }}</div>
         </div>
 
         <div v-else class="category-mini-list">
@@ -521,7 +627,7 @@ onUnmounted(() => {
             class="cat-mini-item"
           >
             <component :is="getCategoryIcon(cat.categoryIcon)" class="cat-mini-icon" :size="14" :stroke-width="1.8" :style="{ color: cat.categoryColor }" />
-            <span class="cat-mini-name">{{ cat.categoryName }}</span>
+            <span class="cat-mini-name">{{ categoryLabel(cat.categoryName) }}</span>
             <div class="cat-mini-bar">
               <div
                 class="cat-mini-fill"
@@ -635,7 +741,9 @@ onUnmounted(() => {
 }
 
 .idle-time {
-  opacity: 0.7;
+  /* 空闲时长：淡蓝色，与「今日活跃时长」的粉色主色区分开 */
+  color: var(--idle-accent);
+  opacity: 0.95;
 }
 
 .glow-orb {
@@ -816,32 +924,100 @@ onUnmounted(() => {
   }
 }
 
+.current-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .current-name {
+  flex: 1;
+  min-width: 0;
   font-size: 13px;
   font-weight: 600;
   color: var(--text-primary);
-  margin-bottom: 2px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.current-title {
-  font-size: 11px;
-  color: var(--text-tertiary);
-  margin-bottom: 8px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .current-duration {
+  flex-shrink: 0;
+  white-space: nowrap;
   font-size: 11px;
   color: var(--text-secondary);
 }
 
+.current-title {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .current-cat {
   color: var(--text-tertiary);
+}
+
+.current-idle {
+  font-size: 11px;
+  color: #f59e0b;
+  margin-top: 4px;
+}
+
+/* 目标预算卡片 */
+.goals-card {
+  font-size: 12px;
+}
+
+.goals-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.goal-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.goal-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.goal-cat {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.goal-usage {
+  font-size: 10px;
+  font-family: monospace;
+  color: var(--text-tertiary);
+}
+
+.goal-usage.exceeded {
+  color: #ef4444;
+  font-weight: 600;
+}
+
+.goal-bar {
+  height: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.goal-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.5s ease;
 }
 
 /* 应用排行 */

@@ -1,7 +1,7 @@
 <template>
   <div class="page-container">
     <div class="page-header">
-      <h2 class="page-title">热力图</h2>
+      <h2 class="page-title">{{ t('heatmap.title') }}</h2>
       <div class="year-picker-wrap">
         <n-select v-model:value="selectedYear" :options="yearOptions" style="width: 120px" />
       </div>
@@ -9,15 +9,15 @@
     <div class="stats-summary">
       <div class="stat-item">
         <div class="stat-value">{{ formatDuration(yearTotal) }}</div>
-        <div class="stat-label">年度总专注</div>
+        <div class="stat-label">{{ t('heatmap.yearTotal') }}</div>
       </div>
       <div class="stat-item">
         <div class="stat-value">{{ avgPerDay }}</div>
-        <div class="stat-label">日均专注</div>
+        <div class="stat-label">{{ t('heatmap.avgPerDay') }}</div>
       </div>
       <div class="stat-item">
         <div class="stat-value">{{ maxStreak }}</div>
-        <div class="stat-label">最长连续</div>
+        <div class="stat-label">{{ t('heatmap.maxStreak') }}</div>
       </div>
     </div>
     <div class="chart-container heatmap-container" ref="chartRef"></div>
@@ -26,12 +26,15 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { NSelect } from 'naive-ui'
 import { invoke } from '@tauri-apps/api/core'
 import * as echarts from 'echarts'
 import type { HeatmapDay } from '../api/types'
 import { formatDuration } from '../utils/format'
 import './timeline.css'
+
+const { t, tm, locale } = useI18n()
 
 const selectedYear = ref(new Date().getFullYear())
 const heatmapData = ref<HeatmapDay[]>([])
@@ -52,7 +55,7 @@ const yearTotal = computed(() => {
 
 const avgPerDay = computed(() => {
   const activeDays = heatmapData.value.filter(d => d.totalSeconds > 0).length
-  if (activeDays === 0) return '0m'
+  if (activeDays === 0) return formatDuration(0)
   const avgSeconds = Math.round(yearTotal.value / activeDays)
   return formatDuration(avgSeconds)
 })
@@ -124,8 +127,8 @@ function renderChart() {
         const pomodoroCount = params.value[2] || 0
         return `
           <div style="font-weight: 600; margin-bottom: 4px;">${date}</div>
-          <div>专注时长: ${formatDuration(seconds)}</div>
-          <div>番茄钟: ${pomodoroCount} 个</div>
+          <div>${t('heatmap.focusDuration')}: ${formatDuration(seconds)}</div>
+          <div>${t('heatmap.pomodoroCount')}: ${pomodoroCount} ${t('common.unit')}</div>
         `
       },
     },
@@ -141,14 +144,14 @@ function renderChart() {
         fontSize: 11,
       },
       pieces: [
-        { min: 14400, label: '4小时以上', color: '#0e4429' },
-        { min: 7200, max: 14399, label: '2-4小时', color: '#006d32' },
-        { min: 3600, max: 7199, label: '1-2小时', color: '#26a641' },
-        { min: 1800, max: 3599, label: '30分-1小时', color: '#39d353' },
-        { min: 1, max: 1799, label: '少于30分', color: '#9be9a8' },
-        { value: 0, label: '无数据', color: 'rgba(255, 255, 255, 0.06)' },
+        { min: 14400, label: t('heatmap.over4h'), color: '#0e4429' },
+        { min: 7200, max: 14399, label: t('heatmap.h2to4'), color: '#006d32' },
+        { min: 3600, max: 7199, label: t('heatmap.h1to2'), color: '#26a641' },
+        { min: 1800, max: 3599, label: t('heatmap.min30to1h'), color: '#39d353' },
+        { min: 1, max: 1799, label: t('heatmap.under30m'), color: '#9be9a8' },
+        { value: 0, label: t('heatmap.none'), color: 'rgba(255, 255, 255, 0.06)' },
       ],
-      text: ['多', '少'],
+      text: [t('heatmap.more'), t('heatmap.less')],
     },
     calendar: {
       top: 40,
@@ -168,14 +171,14 @@ function renderChart() {
       },
       monthLabel: {
         show: true,
-        nameMap: 'ZH',
+        nameMap: locale.value === 'zh' ? 'ZH' : 'EN',
         color: 'rgba(255, 255, 255, 0.6)',
         fontSize: 11,
         position: 'start',
       },
       dayLabel: {
         firstDay: 0,
-        nameMap: ['日', '一', '二', '三', '四', '五', '六'],
+        nameMap: tm('heatmap.weekdays') as string[],
         color: 'rgba(255, 255, 255, 0.6)',
         fontSize: 10,
       },
@@ -211,4 +214,5 @@ onUnmounted(() => {
 })
 
 watch(selectedYear, loadData)
+watch(locale, () => renderChart())
 </script>

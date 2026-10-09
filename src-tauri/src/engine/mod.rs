@@ -4,11 +4,12 @@ pub mod pomodoro;
 use std::sync::Arc;
 use std::time::Duration;
 use parking_lot::{Mutex, RwLock};
-use tauri::AppHandle;
+use chrono::Utc;
+use tauri::{AppHandle, Emitter};
 
 use crate::monitor;
 use crate::tray;
-use crate::db::{CategoryDao, Database, GeneralSettings};
+use crate::db::{CategoryDao, Database, GeneralSettings, GoalDao};
 use activity_state::ActivityStateMachine;
 use pomodoro::PomodoroEngine;
 
@@ -59,6 +60,8 @@ pub async fn start_monitor_loop(
     let monitor = monitor::create_monitor();
     let mut interval = tokio::time::interval(Duration::from_secs(MONITOR_INTERVAL_SECS));
     let mut tick_count: u32 = 0;
+    // 已知的超标分类 ID 集合，避免重复通知
+    let mut already_exceeded: std::collections::HashSet<i64> = std::collections::HashSet::new();
 
     tracing::info!("Monitor loop started (interval: {}s)", MONITOR_INTERVAL_SECS);
 
@@ -119,10 +122,21 @@ pub async fn start_monitor_loop(
             (gs.idle_threshold_minutes as u64).saturating_mul(60)
         };
         let is_idle = idle_time.as_secs() >= idle_threshold_secs.max(60); // 最少 1 分钟
+        // 最后一次用户输入的时间：空闲段以它作为起点（而不是判定为空闲的那一刻）
+        let idle_since = if is_idle {
+            Some(Utc::now().timestamp() - idle_time.as_secs() as i64)
+        } else {
+            None
+        };
 
         // 更新活动状态机
         let mut eng = engine.lock();
-        eng.tick(&window_info, is_idle, DEBOUNCE_SECS);
+        let switched = eng.tick(&window_info, is_idle, DEBOUNCE_SECS, idle_since);
+
+        // 当前活动切换（含进入/离开空闲）时立刻通知前端刷新，避免等 10 秒轮询
+        if switched {
+            let _ = app.emit("activity://changed", ());
+        }
 
         // 自动番茄钟模式：根据当前活动分类自动控制
         let auto_mode_changed = {
@@ -165,6 +179,38 @@ pub async fn start_monitor_loop(
         // 定期刷新托盘统计
         if tick_count % TRAY_REFRESH_TICKS == 0 {
             let _ = tray::refresh_tray_stats(&app);
+
+            // 检查目标预算超标
+            {
+                let conn = db.conn().lock();
+                if let Ok(newly_exceeded) = GoalDao::check_newly_exceeded(&conn, &already_exceeded) {
+                    drop(conn);
+                    for cat_name in &newly_exceeded {
+                        tracing::warn!("Goal exceeded: category '{}'", cat_name);
+                        // 发送系统通知（复用 tauri-plugin-notification）
+                        let notification_enabled = general_settings.read().notification_enabled;
+                        if notification_enabled {
+                            use tauri_plugin_notification::NotificationExt;
+                            let _ = app.notification()
+                                .builder()
+                                .title(format!("「{}」已超出今日预算", cat_name))
+                                .body("你已超过该分类的每日时间限额")
+                                .show();
+                        }
+                    }
+                    // 把新超标的加入已知集合
+                    if let Ok(statuses) = {
+                        let conn = db.conn().lock();
+                        GoalDao::get_active_goals_status(&conn)
+                    } {
+                        for s in &statuses {
+                            if s.exceeded {
+                                already_exceeded.insert(s.goal.category_id);
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

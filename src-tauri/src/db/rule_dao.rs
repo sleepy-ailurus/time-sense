@@ -9,15 +9,15 @@ impl RuleDao {
     /// 获取所有规则（带分类名称，按排序号）
     pub fn list_all(conn: &Connection) -> Result<Vec<AppRule>> {
         let mut stmt = conn.prepare(
-            "SELECT r.id, r.category_id, c.name, r.match_type, r.match_value, 
-                    r.match_mode, r.sort_order, r.enabled
+            "SELECT r.id, r.category_id, c.name, r.match_type, r.match_value,
+                    r.match_mode, r.label, r.sort_order, r.enabled
              FROM app_rules r
              LEFT JOIN categories c ON r.category_id = c.id
              ORDER BY r.sort_order ASC, r.id ASC",
         )?;
 
         let rows = stmt.query_map([], |row| {
-            let enabled_int: i32 = row.get(7)?;
+            let enabled_int: i32 = row.get(8)?;
             Ok(AppRule {
                 id: row.get(0)?,
                 category_id: row.get(1)?,
@@ -25,7 +25,8 @@ impl RuleDao {
                 match_type: row.get(3)?,
                 match_value: row.get(4)?,
                 match_mode: row.get(5)?,
-                sort_order: row.get(6)?,
+                label: row.get(6)?,
+                sort_order: row.get(7)?,
                 enabled: enabled_int == 1,
             })
         })?;
@@ -40,8 +41,8 @@ impl RuleDao {
     /// 获取所有启用的规则（用于匹配）
     pub fn list_enabled(conn: &Connection) -> Result<Vec<AppRule>> {
         let mut stmt = conn.prepare(
-            "SELECT r.id, r.category_id, c.name, r.match_type, r.match_value, 
-                    r.match_mode, r.sort_order, r.enabled
+            "SELECT r.id, r.category_id, c.name, r.match_type, r.match_value,
+                    r.match_mode, r.label, r.sort_order, r.enabled
              FROM app_rules r
              LEFT JOIN categories c ON r.category_id = c.id
              WHERE r.enabled = 1
@@ -56,7 +57,8 @@ impl RuleDao {
                 match_type: row.get(3)?,
                 match_value: row.get(4)?,
                 match_mode: row.get(5)?,
-                sort_order: row.get(6)?,
+                label: row.get(6)?,
+                sort_order: row.get(7)?,
                 enabled: true,
             })
         })?;
@@ -71,13 +73,14 @@ impl RuleDao {
     /// 新增规则
     pub fn create(conn: &Connection, rule: &NewAppRule) -> Result<i64> {
         conn.execute(
-            "INSERT INTO app_rules (category_id, match_type, match_value, match_mode) 
-             VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO app_rules (category_id, match_type, match_value, match_mode, label)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
                 rule.category_id,
                 rule.match_type,
                 rule.match_value,
                 rule.match_mode,
+                rule.label,
             ],
         )?;
         Ok(conn.last_insert_rowid())
@@ -86,16 +89,28 @@ impl RuleDao {
     /// 更新规则
     pub fn update(conn: &Connection, id: i64, rule: &NewAppRule) -> Result<()> {
         conn.execute(
-            "UPDATE app_rules SET category_id = ?1, match_type = ?2, 
-             match_value = ?3, match_mode = ?4 WHERE id = ?5",
+            "UPDATE app_rules SET category_id = ?1, match_type = ?2,
+             match_value = ?3, match_mode = ?4, label = ?5 WHERE id = ?6",
             params![
                 rule.category_id,
                 rule.match_type,
                 rule.match_value,
                 rule.match_mode,
+                rule.label,
                 id,
             ],
         )?;
+        Ok(())
+    }
+
+    /// 批量更新规则排序（接收有序 id 列表，按索引设置 sort_order）
+    pub fn reorder(conn: &Connection, ordered_ids: &[i64]) -> Result<()> {
+        for (idx, &id) in ordered_ids.iter().enumerate() {
+            conn.execute(
+                "UPDATE app_rules SET sort_order = ?1 WHERE id = ?2",
+                params![idx as i32, id],
+            )?;
+        }
         Ok(())
     }
 
@@ -125,18 +140,17 @@ impl RuleDao {
 pub struct RuleMatcher;
 
 impl RuleMatcher {
-    /// 根据进程名和窗口标题匹配分类 ID
-    /// 优先级：title 规则 > process 规则；先匹配到的优先
-    pub fn match_category(
-        rules: &[AppRule],
+    /// 返回命中的规则（title 优先于 process；同类按 sort_order 先者胜）
+    pub fn match_rule<'a>(
+        rules: &'a [AppRule],
         process_name: &str,
         window_title: Option<&str>,
-    ) -> Option<i64> {
+    ) -> Option<&'a AppRule> {
         // 第一遍：匹配窗口标题（优先级更高）
         if let Some(title) = window_title {
             for rule in rules.iter().filter(|r| r.match_type == "title") {
                 if Self::does_match(&rule.match_value, &rule.match_mode, title) {
-                    return Some(rule.category_id);
+                    return Some(rule);
                 }
             }
         }
@@ -144,11 +158,21 @@ impl RuleMatcher {
         // 第二遍：匹配进程名
         for rule in rules.iter().filter(|r| r.match_type == "process") {
             if Self::does_match(&rule.match_value, &rule.match_mode, process_name) {
-                return Some(rule.category_id);
+                return Some(rule);
             }
         }
 
         None
+    }
+
+    /// 根据进程名和窗口标题匹配分类 ID
+    /// 优先级：title 规则 > process 规则；先匹配到的优先
+    pub fn match_category(
+        rules: &[AppRule],
+        process_name: &str,
+        window_title: Option<&str>,
+    ) -> Option<i64> {
+        Self::match_rule(rules, process_name, window_title).map(|r| r.category_id)
     }
 
     fn does_match(pattern: &str, mode: &str, text: &str) -> bool {

@@ -12,6 +12,8 @@ pub struct ActivityLog {
     pub duration: i64,
     pub is_idle: bool,
     pub category_id: Option<i64>,
+    /// 站点标签（title 规则命中时记录，如「抖音」），统计/时间轴展示用
+    pub site_label: Option<String>,
 }
 
 /// 应用统计
@@ -46,6 +48,8 @@ pub struct CurrentActivity {
     pub is_idle: bool,
     pub category_id: Option<i64>,
     pub category_name: Option<String>,
+    /// 站点标签（当前活动命中 title 规则时的展示名，如「B站」）
+    pub site_label: Option<String>,
 }
 
 // ---------- 分类 ----------
@@ -60,6 +64,9 @@ pub struct Category {
     pub icon: Option<String>,
     pub sort_order: i32,
     pub is_default: bool,
+    /// 是否计入「专注时长」（热力图 / 连续天数）
+    #[serde(default)]
+    pub is_focus: bool,
 }
 
 /// 分类统计
@@ -86,6 +93,8 @@ pub struct AppRule {
     pub match_type: String, // process / title
     pub match_value: String,
     pub match_mode: String, // exact / contains / regex
+    /// 显示名（可选）：title 规则命中时统计展示用，如 match_value=bilibili → B站
+    pub label: Option<String>,
     pub sort_order: i32,
     pub enabled: bool,
 }
@@ -98,6 +107,45 @@ pub struct NewAppRule {
     pub match_type: String,
     pub match_value: String,
     pub match_mode: String,
+    /// 显示名（可选）：title 规则命中时统计展示用；缺省兼容旧前端
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+// ---------- 目标预算 ----------
+
+/// 目标预算
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Goal {
+    pub id: i64,
+    pub category_id: i64,
+    pub category_name: Option<String>,
+    pub category_color: Option<String>,
+    pub daily_limit_minutes: i32,
+    pub enabled: bool,
+}
+
+/// 新建目标入参
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewGoal {
+    pub category_id: i64,
+    pub daily_limit_minutes: i32,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_true() -> bool { true }
+
+/// 目标状态（含今日已用时长）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GoalStatus {
+    pub goal: Goal,
+    pub used_seconds: i64,
+    pub limit_seconds: i64,
+    pub exceeded: bool,
 }
 
 // ---------- 番茄钟 ----------
@@ -177,7 +225,16 @@ pub struct GeneralSettings {
     pub auto_start: bool,         // 开机自启
     pub notification_enabled: bool, // 系统通知
     pub idle_threshold_minutes: i32, // 闲置检测阈值（分钟）
+    /// 全局快捷键：显示/隐藏主面板（空字符串表示不注册）
+    #[serde(default = "default_shortcut_toggle_window")]
+    pub shortcut_toggle_window: String,
+    /// 全局快捷键：开始/暂停番茄钟（空字符串表示不注册）
+    #[serde(default = "default_shortcut_toggle_pomodoro")]
+    pub shortcut_toggle_pomodoro: String,
 }
+
+fn default_shortcut_toggle_window() -> String { "Ctrl+Shift+T".to_string() }
+fn default_shortcut_toggle_pomodoro() -> String { "Ctrl+Shift+P".to_string() }
 
 impl Default for GeneralSettings {
     fn default() -> Self {
@@ -185,6 +242,8 @@ impl Default for GeneralSettings {
             auto_start: true,
             notification_enabled: true,
             idle_threshold_minutes: 3,
+            shortcut_toggle_window: default_shortcut_toggle_window(),
+            shortcut_toggle_pomodoro: default_shortcut_toggle_pomodoro(),
         }
     }
 }
@@ -203,8 +262,20 @@ pub struct DailySummary {
     pub entertainment_seconds: i64,// 娱乐类时长
     pub social_seconds: i64,       // 社交类时长
     pub other_seconds: i64,        // 其他类时长
+    /// 各分类明细（包含用户自建分类；未分类并入「其他」）
+    pub category_seconds: Vec<CategorySlice>,
     pub pomodoro_count: i32,       // 完成番茄钟数
     pub pomodoro_seconds: i64,     // 番茄钟专注总时长
+}
+
+/// 单日某个分类的活跃时长
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CategorySlice {
+    pub category_id: i64,
+    pub category_name: String,
+    pub category_color: String,
+    pub seconds: i64,
 }
 
 /// 热力图单天数据

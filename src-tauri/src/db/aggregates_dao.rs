@@ -2,7 +2,7 @@ use anyhow::Result;
 use chrono::{Datelike, Duration, Local, TimeZone};
 use rusqlite::{params, Connection};
 
-use super::models::{DailySummary, HeatmapDay, HourlyStat};
+use super::models::{CategorySlice, DailySummary, HeatmapDay, HourlyStat};
 
 pub struct AggregatesDao;
 
@@ -72,6 +72,35 @@ impl AggregatesDao {
             |row| row.get(0),
         )?;
 
+        // 分类明细：带上分类名称与颜色，包含用户自建分类（未分类并入「其他」）
+        let category_seconds = {
+            let mut stmt = conn.prepare(
+                "SELECT
+                    CASE WHEN c.id IS NULL THEN (SELECT id FROM categories WHERE name = '其他') ELSE c.id END as cat_id,
+                    COALESCE(c.name, '其他') as cat_name,
+                    COALESCE(c.color, '#6B7280') as cat_color,
+                    COALESCE(SUM(al.duration), 0) as total
+                 FROM activity_logs al
+                 LEFT JOIN categories c ON al.category_id = c.id
+                 WHERE al.start_time >= ?1 AND al.start_time < ?2 AND al.is_idle = 0
+                 GROUP BY cat_id
+                 ORDER BY total DESC",
+            )?;
+
+            let rows = stmt.query_map(params![start_ts, end_ts], |row| {
+                Ok(CategorySlice {
+                    category_id: row.get::<_, Option<i64>>(0)?.unwrap_or(0),
+                    category_name: row.get(1)?,
+                    category_color: row.get(2)?,
+                    seconds: row.get(3)?,
+                })
+            })?;
+
+            rows.filter_map(|r| r.ok())
+                .filter(|s| s.seconds > 0)
+                .collect::<Vec<CategorySlice>>()
+        };
+
         Ok(DailySummary {
             date: date.to_string(),
             total_seconds,
@@ -81,6 +110,7 @@ impl AggregatesDao {
             entertainment_seconds,
             social_seconds,
             other_seconds,
+            category_seconds,
             pomodoro_count,
             pomodoro_seconds,
         })
@@ -121,12 +151,13 @@ impl AggregatesDao {
             .ok_or_else(|| anyhow::anyhow!("Invalid year: {}", year + 1))?
             .timestamp();
 
-        // 按日期聚合工作+学习时长
+        // 按日期聚合「计入专注」的分类时长（分类可在设置里勾选 is_focus）
         let mut stmt = conn.prepare(
             "SELECT strftime('%Y-%m-%d', datetime(start_time, 'unixepoch', 'localtime')) as day,
-                    COALESCE(SUM(CASE WHEN category_id IN (1, 2) THEN duration ELSE 0 END), 0) as focus_seconds
-             FROM activity_logs
-             WHERE start_time >= ?1 AND start_time < ?2 AND is_idle = 0
+                    COALESCE(SUM(CASE WHEN COALESCE(c.is_focus, 0) = 1 THEN al.duration ELSE 0 END), 0) as focus_seconds
+             FROM activity_logs al
+             LEFT JOIN categories c ON al.category_id = c.id
+             WHERE al.start_time >= ?1 AND al.start_time < ?2 AND al.is_idle = 0
              GROUP BY day
              ORDER BY day ASC",
         )?;

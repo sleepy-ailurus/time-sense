@@ -16,7 +16,7 @@
 
 <p align="center">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-green" />
-  <img alt="release" src="https://img.shields.io/badge/release-v0.1.0-blue" />
+  <img alt="release" src="https://img.shields.io/badge/release-v1.0.0-blue" />
   <img alt="platform" src="https://img.shields.io/badge/platform-Windows%2010%2F11-blue" />
   <img alt="tauri" src="https://img.shields.io/badge/Tauri-2.x-orange" />
   <img alt="vue" src="https://img.shields.io/badge/Vue-3-brightgreen" />
@@ -63,7 +63,7 @@ Built with Tauri 2 + Vue 3 + Rust + SQLite. All data stays on your machine.
 
 ## Installation
 
-1. Download the latest `TimeSense_0.1.0_x64-setup.exe` installer from [Releases](https://github.com/sleepy-ailurus/time-sense/releases)
+1. Download the latest `TimeSense_1.0.0_x64-setup.exe` installer from [Releases](https://github.com/sleepy-ailurus/time-sense/releases)
 2. Run the setup and follow the installation wizard
 3. Launch TimeSense — it lives in your system tray
 

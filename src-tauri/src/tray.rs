@@ -316,7 +316,8 @@ pub fn on_pomodoro_phase_change(app: &AppHandle<Wry>, status: &PomodoroStatus) -
     Ok(())
 }
 
-fn toggle_main_window(app: &AppHandle<Wry>) {
+/// 显示/隐藏主面板（托盘左键、全局快捷键共用）
+pub fn toggle_main_window(app: &AppHandle<Wry>) {
     if let Some(win) = app.get_webview_window("main") {
         let visible = win.is_visible().unwrap_or(false);
         let minimized = win.is_minimized().unwrap_or(false);

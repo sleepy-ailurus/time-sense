@@ -1,53 +1,90 @@
 <template>
   <div class="page-container">
     <div class="page-header">
-      <h2 class="page-title">时间轴</h2>
+      <h2 class="page-title">{{ t('timeline.title') }}</h2>
       <div class="date-picker-wrap">
         <n-date-picker v-model:value="selectedDate" type="date" :clearable="false" />
       </div>
     </div>
     <div class="chart-container" ref="chartRef"></div>
-    <div v-if="loading" class="loading">加载中...</div>
+    <div v-if="loading" class="loading">{{ t('common.loading') }}</div>
     <div v-else-if="activities.length === 0" class="empty-state">
-      <p>当天暂无活动记录</p>
+      <p>{{ t('timeline.empty') }}</p>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { NDatePicker } from 'naive-ui'
 import { format } from 'date-fns'
 import { invoke } from '@tauri-apps/api/core'
 import * as echarts from 'echarts'
 import { escapeHtml } from '../utils/format'
-import type { ActivityLog } from '../api/types'
+import { categoryLabel } from '../utils/categoryName'
+import { getCategories } from '../api'
+import type { ActivityLog, Category } from '../api/types'
 import './timeline.css'
+
+const { t, locale } = useI18n()
 
 const selectedDate = ref<number>(Date.now())
 const activities = ref<ActivityLog[]>([])
+const categories = ref<Category[]>([])
 const loading = ref(false)
 const chartRef = ref<HTMLElement | null>(null)
 const chartInstance = ref<echarts.ECharts | null>(null)
 
-// 分类顺序（从上到下）
-const categoryOrder = [
-  { id: 'work', name: '工作', color: '#3b82f6' },
-  { id: 'study', name: '学习', color: '#22c55e' },
-  { id: 'entertainment', name: '娱乐', color: '#ef4444' },
-  { id: 'neutral', name: '中性', color: '#9ca3af' },
-  { id: 'idle', name: '空闲', color: '#374151' },
-]
+// 时间轴每一行 = 真实分类（用后端返回的名称/颜色，顺序按分类表）+ 空闲
+const categoryRows = computed(() => {
+  const list = categories.value.map((c) => ({
+    key: `cat-${c.id}`,
+    categoryId: c.id as number | null,
+    rawName: c.name,
+    name: categoryLabel(c.name),
+    color: c.color || '#6B7280',
+  }))
 
-function getCategoryInfo(activity: ActivityLog): { id: string; name: string; color: string; index: number } {
-  if (activity.isIdle) {
-    const idx = categoryOrder.findIndex(c => c.id === 'idle')
-    return { ...categoryOrder[idx], index: idx }
+  // 没有分类的记录统一落到「其他」那一行；只有连「其他」分类都不存在时才补一行
+  const hasUncategorized = activities.value.some(
+    (a) => !a.isIdle && !list.some((r) => r.categoryId === a.categoryId),
+  )
+  const hasOther = list.some((r) => r.rawName === '其他' || r.rawName === 'Other')
+  if (hasUncategorized && !hasOther) {
+    list.push({
+      key: 'other',
+      categoryId: null,
+      rawName: '其他',
+      name: t('category.other'),
+      color: '#6B7280',
+    })
   }
-  const catMap: Record<number, string> = { 1: 'work', 2: 'study', 3: 'entertainment', 4: 'neutral' }
-  const catId = activity.categoryId ? catMap[activity.categoryId] || 'neutral' : 'neutral'
-  const idx = categoryOrder.findIndex(c => c.id === catId)
-  return { ...categoryOrder[idx], index: idx }
+
+  list.push({
+    key: 'idle',
+    categoryId: null,
+    rawName: '',
+    name: t('timeline.idle'),
+    color: '#374151',
+  })
+  return list
+})
+
+/** 未分类（或分类已被删除）的记录归入「其他」行 */
+const otherRowIndex = computed(() =>
+  categoryRows.value.findIndex((r) => r.rawName === '其他' || r.rawName === 'Other'),
+)
+
+function getCategoryInfo(activity: ActivityLog): { key: string; name: string; color: string; index: number } {
+  const rows = categoryRows.value
+  if (activity.isIdle) {
+    const idleIdx = rows.findIndex((r) => r.key === 'idle')
+    return { ...rows[idleIdx], index: idleIdx }
+  }
+  const idx = rows.findIndex((r) => r.categoryId != null && r.categoryId === activity.categoryId)
+  const index = idx >= 0 ? idx : Math.max(otherRowIndex.value, 0)
+  return { ...rows[index], index }
 }
 
 function formatDuration(seconds: number): string {
@@ -55,12 +92,12 @@ function formatDuration(seconds: number): string {
   const m = Math.floor((seconds % 3600) / 60)
   const s = seconds % 60
   if (h > 0) {
-    return `${h}小时${m}分${s}秒`
+    return t('common.durationHourMinSec', { h, m, s })
   }
   if (m > 0) {
-    return `${m}分${s}秒`
+    return t('common.durationMinSec', { m, s })
   }
-  return `${s}秒`
+  return t('common.durationSeconds', { n: s })
 }
 
 function formatTime(timestamp: number): string {
@@ -105,7 +142,7 @@ function renderChart() {
     }
   })
 
-  const yAxisData = categoryOrder.map(c => c.name)
+  const yAxisData = categoryRows.value.map(c => c.name)
 
   const option: echarts.EChartsOption = {
     backgroundColor: 'transparent',
@@ -131,14 +168,14 @@ function renderChart() {
           <div style="padding: 4px 0;">
             <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
               <span style="display: inline-block; width: 10px; height: 10px; border-radius: 2px; background: ${catInfo.color};"></span>
-              <span style="font-weight: 600; color: #fff;">${escapeHtml(activity.processName)}</span>
+              <span style="font-weight: 600; color: #fff;">${escapeHtml(activity.siteLabel || activity.processName)}</span>
               <span style="color: #9ca3af; font-size: 11px;">[${catInfo.name}]</span>
             </div>
             ${activity.windowTitle ? `<div style="color: #9ca3af; margin-bottom: 6px; font-size: 11px; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(activity.windowTitle)}</div>` : ''}
             <div style="color: #d1d5db; font-size: 12px; line-height: 1.6;">
-              <div>开始：${formatTime(activity.startTime)}</div>
-              <div>结束：${formatTime(activity.endTime)}</div>
-              <div>时长：${duration}</div>
+              <div>${t('timeline.start')}：${formatTime(activity.startTime)}</div>
+              <div>${t('timeline.end')}：${formatTime(activity.endTime)}</div>
+              <div>${t('timeline.duration')}：${duration}</div>
             </div>
           </div>
         `
@@ -240,8 +277,12 @@ async function loadData() {
   loading.value = true
   try {
     const dateStr = format(selectedDate.value, 'yyyy-MM-dd')
-    const data = await invoke<ActivityLog[]>('get_activity_by_date', { date: dateStr })
+    const [data, cats] = await Promise.all([
+      invoke<ActivityLog[]>('get_activity_by_date', { date: dateStr }),
+      getCategories(),
+    ])
     activities.value = data
+    categories.value = cats
     await nextTick()
     renderChart()
   } catch (e) {
@@ -265,4 +306,5 @@ onUnmounted(() => {
 })
 
 watch(selectedDate, loadData)
+watch(locale, () => renderChart())
 </script>
