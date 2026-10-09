@@ -92,6 +92,7 @@ design/
 
 # ---- Project docs (internal) ----
 开发文档.md
+后续维护.md
 
 # ---- Release installers (generated) ----
 setup/
